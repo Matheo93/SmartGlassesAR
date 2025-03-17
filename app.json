@@ -74,7 +74,7 @@
       "typedRoutes": true
     },
     "extra": {
-      "googleApiKey": "AIzaSyCgyxrF4cdYQyr_SLFbCeFYZa7Z5E9CYAU",
+      "googleApiKey": "YOUR_API_KEY_HERE",
       "router": {
         "origin": false
       },
