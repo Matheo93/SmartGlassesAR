@@ -14,11 +14,13 @@ import { CameraView, CameraType } from 'expo-camera';
 import { ThemedText } from '../ui/ThemedText';
 import { ThemedView } from '../ui/ThemedView';
 import { Ionicons, FontAwesome5 } from '@expo/vector-icons';
+import NavigationService, { TransportMode } from '../../services/NavigationService';
 
-type Coordinate = {
+// Define coordinate interface without creating a conflict
+interface NavigationCoordinate {
   latitude: number;
   longitude: number;
-};
+}
 
 type NavigationProps = {
   onClose?: () => void;
@@ -26,26 +28,34 @@ type NavigationProps = {
   wheelchairMode?: boolean;
 };
 
+// Mock direction data for demo
+interface MockDirection {
+  direction: string;
+  distance: string;
+  nextTurn: string;
+  estimatedArrivalTime: string;
+}
+
 export const ARNavigation: React.FC<NavigationProps> = ({
   onClose,
   initialDestination,
   wheelchairMode: initialWheelchairMode = false,
 }) => {
   // State variables
-  const [currentPosition, setCurrentPosition] = useState<Coordinate | null>(null);
+  const [currentPosition, setCurrentPosition] = useState<NavigationCoordinate | null>(null);
   const [destination, setDestination] = useState<string>(initialDestination || '');
   const [isNavigating, setIsNavigating] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [wheelchairMode, setWheelchairMode] = useState(initialWheelchairMode);
-  const [transportMode, setTransportMode] = useState<'walking' | 'driving' | 'bicycling'>('walking');
+  const [transportMode, setTransportMode] = useState<TransportMode>('walking');
   const [isCameraReady, setIsCameraReady] = useState(false);
   const [showHeatmapLegend, setShowHeatmapLegend] = useState(false);
   
   const cameraRef = useRef<CameraView | null>(null);
   
   // Mock navigation data
-  const mockDirection = {
+  const mockDirection: MockDirection = {
     direction: 'right',
     distance: '100m',
     nextTurn: 'Turn right on Main Street',
@@ -101,11 +111,37 @@ export const ARNavigation: React.FC<NavigationProps> = ({
     
     setIsLoading(true);
     
-    // Simulate API call
-    setTimeout(() => {
-      setIsNavigating(true);
-      setIsLoading(false);
-    }, 1500);
+    // Create a navigation service instance
+    const navigationService = NavigationService.getInstance();
+    
+    // First geocode the destination to get coordinates
+    NavigationService.geocodeAddress(destination)
+      .then((destCoords: NavigationCoordinate | null) => {
+        if (!destCoords) {
+          throw new Error('Could not find destination');
+        }
+        
+        // Then get the actual route with wheelchair mode if enabled
+        return navigationService.startNavigation(
+          destCoords,
+          transportMode,
+          wheelchairMode
+        );
+      })
+      .then((route: any) => {
+        if (route) {
+          setIsNavigating(true);
+          // Process route for display
+        } else {
+          Alert.alert('Navigation Error', 'Could not calculate a route');
+        }
+      })
+      .catch((error: Error) => {
+        Alert.alert('Error', error.message);
+      })
+      .finally(() => {
+        setIsLoading(false);
+      });
   };
   
   // Stop navigation
@@ -115,7 +151,7 @@ export const ARNavigation: React.FC<NavigationProps> = ({
   
   // Toggle wheelchair mode with haptic feedback
   const toggleWheelchairMode = () => {
-    setWheelchairMode(prev => !prev);
+    setWheelchairMode((prev: boolean) => !prev);
     // In a real app, we would provide haptic feedback here
   };
   

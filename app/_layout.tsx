@@ -5,6 +5,7 @@ import { Stack } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
 import { useEffect } from 'react';
 import 'react-native-reanimated';
+import ApiConfig from '@/services/ApiConfig';
 
 import { useColorScheme } from '@/components/useColorScheme';
 
@@ -31,6 +32,11 @@ export default function RootLayout() {
   useEffect(() => {
     if (error) throw error;
   }, [error]);
+
+  useEffect(() => {
+    ApiConfig.initialize();
+    console.log('Services API initialisés avec succès');
+  }, []);
 
   useEffect(() => {
     if (loaded) {

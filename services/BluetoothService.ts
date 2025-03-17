@@ -530,6 +530,59 @@ export function useBluetooth() {
       setError(`Disconnection error: ${message}`);
     }
   }, []);
+
+  // In a test component, validate the connection flow
+const testBluetoothConnection = async () => {
+    const bluetoothService = BluetoothService.getInstance();
+    
+    try {
+      // Initialize and request permissions
+      const hasPermissions = await bluetoothService.requestPermissions();
+      if (!hasPermissions) {
+        console.error('Bluetooth permissions denied');
+        return;
+      }
+      
+      // Scan for devices
+      let foundDevices: BluetoothDevice[] = [];
+      bluetoothService.startScan(
+        (device) => {
+          console.log('Device found:', device);
+          foundDevices.push(device);
+        },
+        (error) => {
+          console.error('Scan error:', error);
+        }
+      );
+      
+      // Stop scan after 10 seconds
+      setTimeout(() => {
+        bluetoothService.stopScan();
+        console.log('Scan completed. Found devices:', foundDevices);
+        
+        // Try to connect to a test device if found
+        if (foundDevices.length > 0) {
+          bluetoothService.connectToDevice(
+            foundDevices[0].id,
+            (device) => {
+              console.log('Connected to device:', device);
+              
+              // Test haptic feedback
+              bluetoothService.sendHapticFeedback(HapticFeedbackType.SHORT);
+            },
+            () => {
+              console.log('Device disconnected');
+            },
+            (error) => {
+              console.error('Connection error:', error);
+            }
+          );
+        }
+      }, 10000);
+    } catch (error) {
+      console.error('Bluetooth test error:', error);
+    }
+  };
   
   // Send haptic feedback
   const sendHapticFeedback = useCallback(async (

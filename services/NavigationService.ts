@@ -2,29 +2,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Alert, Platform } from 'react-native';
 import ApiConfig from './ApiConfig';
-
-// Importation conditionnelle d'expo-location
-let Location: any;
-try {
-  Location = require('expo-location');
-} catch (error) {
-  console.warn('expo-location could not be imported, using mock implementation');
-  Location = {
-    requestForegroundPermissionsAsync: async () => ({ status: 'granted' }),
-    getCurrentPositionAsync: async () => ({
-      coords: {
-        latitude: 48.8584,
-        longitude: 2.2945
-      }
-    }),
-    Accuracy: {
-      Highest: 6
-    },
-    watchPositionAsync: async () => ({
-      remove: () => {}
-    }),
-  };
-}
+import * as Location from 'expo-location';
 
 // Interfaces
 export interface Coordinate {
@@ -58,17 +36,28 @@ export interface RouteDetails {
   polyline?: string; // encoded polyline for the route
 }
 
+// Valid transportation modes
+export type TransportMode = 'walking' | 'driving' | 'bicycling' | 'transit';
+
 /**
  * Navigation service using Google Maps APIs
  */
 export class NavigationService {
-  // Instance properties for use with the hook
+  private static instance: NavigationService | null = null;
   private currentRoute: RouteDetails | null = null;
+  
+  // Create singleton instance
+  public static getInstance(): NavigationService {
+    if (!this.instance) {
+      this.instance = new NavigationService();
+    }
+    return this.instance;
+  }
   
   /**
    * Request location permissions
    */
-  static async requestLocationPermissions(): Promise<boolean> {
+  public static async requestLocationPermissions(): Promise<boolean> {
     try {
       const { status } = await Location.requestForegroundPermissionsAsync();
       return status === 'granted';
@@ -81,7 +70,7 @@ export class NavigationService {
   /**
    * Get the current location
    */
-  static async getCurrentLocation(): Promise<Coordinate | null> {
+  public static async getCurrentLocation(): Promise<Coordinate | null> {
     try {
       const { status } = await Location.requestForegroundPermissionsAsync();
       
@@ -110,7 +99,7 @@ export class NavigationService {
   /**
    * Search for places near a location
    */
-  static async searchPlaces(
+  public static async searchPlaces(
     query: string,
     location: Coordinate,
     radius: number = 1500, // Default 1.5km radius
@@ -159,12 +148,45 @@ export class NavigationService {
   }
 
   /**
+   * Geocode an address to coordinates
+   */
+  public static async geocodeAddress(address: string): Promise<Coordinate | null> {
+    try {
+      const params = new URLSearchParams({
+        key: ApiConfig.getApiKey(),
+        address,
+      });
+      
+      const response = await fetch(
+        `${ApiConfig.API_ENDPOINTS.GEOCODING}?${params.toString()}`
+      );
+      
+      const data = await response.json();
+      
+      if (data.status !== 'OK' || !data.results || data.results.length === 0) {
+        console.warn('Geocoding API returned status:', data.status);
+        return null;
+      }
+      
+      const location = data.results[0].geometry.location;
+      
+      return {
+        latitude: location.lat,
+        longitude: location.lng,
+      };
+    } catch (error) {
+      console.error('Error geocoding address:', error);
+      return null;
+    }
+  }
+
+  /**
    * Get route between two points
    */
-  static async getRoute(
+  public static async getRoute(
     origin: Coordinate,
     destination: Coordinate,
-    mode: 'walking' | 'driving' | 'bicycling' | 'transit' = 'walking',
+    mode: TransportMode = 'walking',
     wheelchair: boolean = false
   ): Promise<RouteDetails | null> {
     try {
@@ -178,7 +200,7 @@ export class NavigationService {
       
       // Add wheelchair accessibility parameter if needed
       if (wheelchair) {
-        params.append('wheelchair_accessible', 'true');
+        params.append('alternatives', 'true'); // Request alternative routes for wheelchair access
       }
       
       // Call Directions API
@@ -224,10 +246,12 @@ export class NavigationService {
       });
       
       // Add departure and arrival steps
-      steps[0].maneuver = 'depart';
-      steps[steps.length - 1].maneuver = 'arrive';
+      if (steps.length > 0) {
+        steps[0].maneuver = 'depart';
+        steps[steps.length - 1].maneuver = 'arrive';
+      }
       
-      return {
+      const routeDetails: RouteDetails = {
         origin,
         destination: {
           latitude: leg.end_location.lat,
@@ -238,6 +262,8 @@ export class NavigationService {
         steps,
         polyline: route.overview_polyline.points,
       };
+      
+      return routeDetails;
     } catch (error) {
       console.error('Error getting route:', error);
       return null;
@@ -247,7 +273,7 @@ export class NavigationService {
   /**
    * Calculate distance between two coordinates using Haversine formula
    */
-  static calculateDistance(coord1: Coordinate, coord2: Coordinate): number {
+  public static calculateDistance(coord1: Coordinate, coord2: Coordinate): number {
     const R = 6371e3; // Earth radius in meters
     const φ1 = (coord1.latitude * Math.PI) / 180;
     const φ2 = (coord2.latitude * Math.PI) / 180;
@@ -266,7 +292,7 @@ export class NavigationService {
    * Calculate bearing (direction) between two coordinates
    * @returns Bearing in degrees (0-360, 0 = North)
    */
-  static calculateBearing(from: Coordinate, to: Coordinate): number {
+  public static calculateBearing(from: Coordinate, to: Coordinate): number {
     const φ1 = (from.latitude * Math.PI) / 180;
     const φ2 = (to.latitude * Math.PI) / 180;
     const Δλ = ((to.longitude - from.longitude) * Math.PI) / 180;
@@ -282,56 +308,63 @@ export class NavigationService {
     return bearing;
   }
   
-  /**
-   * Geocode an address to coordinates
-   */
-  static async geocodeAddress(address: string): Promise<Coordinate | null> {
-    try {
-      const params = new URLSearchParams({
-        key: ApiConfig.getApiKey(),
-        address,
-      });
-      
-      const response = await fetch(
-        `${ApiConfig.API_ENDPOINTS.GEOCODING}?${params.toString()}`
-      );
-      
-      const data = await response.json();
-      
-      if (data.status !== 'OK' || !data.results || data.results.length === 0) {
-        console.warn('Geocoding API returned status:', data.status);
-        return null;
-      }
-      
-      const location = data.results[0].geometry.location;
-      
-      return {
-        latitude: location.lat,
-        longitude: location.lng,
-      };
-    } catch (error) {
-      console.error('Error geocoding address:', error);
-      return null;
-    }
-  }
-  
-  // Constructor to support instance usage
-  constructor() {
-    // Initialization if needed
-  }
-  
-  // Instance method to get current route (for use with hooks)
+  // Instance methods for route management
   public getCurrentRoute(): RouteDetails | null {
     return this.currentRoute;
   }
   
-  // Set current route (for use with hooks)
   public setCurrentRoute(route: RouteDetails | null): void {
     this.currentRoute = route;
   }
+  
+  /**
+   * Start navigation to a location
+   */
+  public async startNavigation(
+    destination: Coordinate,
+    mode: TransportMode = 'walking',
+    wheelchair: boolean = false
+  ): Promise<RouteDetails | null> {
+    try {
+      // Get current position
+      const currentPosition = await NavigationService.getCurrentLocation();
+      if (!currentPosition) {
+        throw new Error('Unable to get current location');
+      }
+      
+      // Get route
+      const route = await NavigationService.getRoute(
+        currentPosition,
+        destination,
+        mode,
+        wheelchair
+      );
+      
+      if (!route) {
+        throw new Error('Failed to calculate route');
+      }
+      
+      // Save current route
+      this.setCurrentRoute(route);
+      
+      return route;
+    } catch (error) {
+      console.error('Error starting navigation:', error);
+      throw error;
+    }
+  }
+  
+  /**
+   * Stop current navigation
+   */
+  public stopNavigation(): void {
+    this.setCurrentRoute(null);
+  }
 }
 
-// React hook for using the navigation service
+/**
+ * React hook for using the navigation service
+ */
 export function useNavigation() {
   const [currentPosition, setCurrentPosition] = useState<Coordinate | null>(null);
   const [destination, setDestination] = useState<Coordinate | null>(null);
@@ -341,7 +374,8 @@ export function useNavigation() {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   
-  const navigationService = new NavigationService();
+  // Create navigation service instance
+  const navigationService = NavigationService.getInstance();
   
   // Get current position
   const getCurrentPosition = useCallback(async (): Promise<Coordinate | null> => {
@@ -390,7 +424,7 @@ export function useNavigation() {
             accuracy: Location.Accuracy.Highest,
             distanceInterval: 5, // Update every 5 meters
           },
-          (location: any) => {
+          (location) => {
             const newPosition = {
               latitude: location.coords.latitude,
               longitude: location.coords.longitude,
@@ -418,7 +452,7 @@ export function useNavigation() {
               ) {
                 // Navigation completed
                 setIsNavigating(false);
-                Alert.alert('Arrivée', 'Vous êtes arrivé à destination');
+                Alert.alert('Arrivé', 'Vous êtes arrivé à destination');
               }
             }
           }
@@ -443,7 +477,7 @@ export function useNavigation() {
   const startNavigation = useCallback(
     async (
       destinationCoord: Coordinate,
-      mode: 'walking' | 'driving' | 'bicycling' | 'transit' = 'walking',
+      mode: TransportMode = 'walking',
       wheelchair: boolean = false
     ) => {
       try {
@@ -455,9 +489,8 @@ export function useNavigation() {
         setIsLoading(true);
         setError(null);
         
-        const origin = currentPosition!;
-        const route = await NavigationService.getRoute(
-          origin,
+        // Use navigation service to start navigation
+        const route = await navigationService.startNavigation(
           destinationCoord,
           mode,
           wheelchair
@@ -470,7 +503,6 @@ export function useNavigation() {
         
         setDestination(destinationCoord);
         setCurrentRoute(route);
-        navigationService.setCurrentRoute(route);
         setCurrentStepIndex(0);
         setIsNavigating(true);
         
@@ -483,16 +515,16 @@ export function useNavigation() {
         setIsLoading(false);
       }
     },
-    [currentPosition, getCurrentPosition]
+    [currentPosition, getCurrentPosition, navigationService]
   );
   
   // Stop navigation
   const stopNavigation = useCallback(() => {
+    navigationService.stopNavigation();
     setIsNavigating(false);
     setCurrentRoute(null);
-    navigationService.setCurrentRoute(null);
     setCurrentStepIndex(0);
-  }, []);
+  }, [navigationService]);
   
   // Search for places
   const searchPlaces = useCallback(
@@ -557,3 +589,5 @@ export function useNavigation() {
     getDistanceToCurrentStep,
   };
 }
+
+export default NavigationService;

@@ -203,47 +203,47 @@ export class GuidanceService {
   }
   
   // Fournit un retour haptique directionnel
-  private async provideDirectionalHapticFeedback(
-    maneuver: 'straight' | 'turn-left' | 'turn-right' | 'uturn' | 'arrive' | 'depart'
-  ): Promise<void> {
-    try {
-      let feedbackType: HapticFeedbackType;
-      
-      switch (maneuver) {
-        case 'turn-left':
-          feedbackType = HapticFeedbackType.LEFT_DIRECTION;
-          break;
-        case 'turn-right':
-          feedbackType = HapticFeedbackType.RIGHT_DIRECTION;
-          break;
-        case 'straight':
-          feedbackType = HapticFeedbackType.STRAIGHT_DIRECTION;
-          break;
-        case 'arrive':
-          feedbackType = HapticFeedbackType.SUCCESS;
-          break;
-        case 'depart':
-          feedbackType = HapticFeedbackType.SHORT;
-          break;
-        case 'uturn':
-          // Séquence de deux impulsions gauche pour faire demi-tour
-          await this.bluetoothService.sendHapticFeedback(
-            HapticFeedbackType.LEFT_DIRECTION,
-            100
-          );
-          await new Promise(resolve => setTimeout(resolve, 500));
-          feedbackType = HapticFeedbackType.LEFT_DIRECTION;
-          break;
-        default:
-          feedbackType = HapticFeedbackType.MEDIUM;
-          break;
-      }
-      
-      await this.bluetoothService.sendHapticFeedback(feedbackType, 100);
-    } catch (error) {
-      console.error('Error providing directional haptic feedback:', error);
+// In GuidanceService.ts - implement haptic feedback
+private async provideDirectionalHapticFeedback(
+  maneuver: 'straight' | 'turn-left' | 'turn-right' | 'uturn' | 'arrive' | 'depart'
+): Promise<void> {
+  try {
+    let feedbackType: HapticFeedbackType;
+    
+    switch (maneuver) {
+      case 'turn-left':
+        feedbackType = HapticFeedbackType.LEFT_DIRECTION;
+        break;
+      case 'turn-right':
+        feedbackType = HapticFeedbackType.RIGHT_DIRECTION;
+        break;
+      case 'straight':
+        feedbackType = HapticFeedbackType.STRAIGHT_DIRECTION;
+        break;
+      case 'arrive':
+        feedbackType = HapticFeedbackType.SUCCESS;
+        break;
+      case 'depart':
+        feedbackType = HapticFeedbackType.SHORT;
+        break;
+      case 'uturn':
+        // Séquence de deux impulsions gauche pour faire demi-tour
+        await this.bluetoothService.sendHapticFeedback(
+          HapticFeedbackType.LEFT_DIRECTION,
+          100
+        );
+        await new Promise(resolve => setTimeout(resolve, 500));
+        feedbackType = HapticFeedbackType.LEFT_DIRECTION;
+        break;
+      default:
+        feedbackType = HapticFeedbackType.MEDIUM;
     }
+    
+    await this.bluetoothService.sendHapticFeedback(feedbackType, 100);
+  } catch (error) {
+    console.error('Error providing directional haptic feedback:', error);
   }
+}
   
   // Fournit une alerte à l'utilisateur
   private async provideAlert(message: string, isWarning: boolean): Promise<void> {

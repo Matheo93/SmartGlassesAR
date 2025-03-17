@@ -74,6 +74,14 @@ export class TelemetryService {
     }
   }
   
+  // In TelemetryService.ts - add accessibility-specific telemetry
+public async logAccessibilityEvent(
+    featureType: 'translation' | 'navigation' | 'voice' | 'haptic',
+    successful: boolean,
+    details: Record<string, any>
+  ): Promise<void> {
+    // Log the event with appropriate structure for analysis
+  }
   // Enregistre un nouvel événement d'utilisation
   public async logUsageEvent(
     feature: string,
