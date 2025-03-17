@@ -1,8 +1,30 @@
 // services/NavigationService.ts
 import { useState, useEffect, useCallback } from 'react';
-import * as Location from 'expo-location';
 import { Alert, Platform } from 'react-native';
 import ApiConfig from './ApiConfig';
+
+// Importation conditionnelle d'expo-location
+let Location: any;
+try {
+  Location = require('expo-location');
+} catch (error) {
+  console.warn('expo-location could not be imported, using mock implementation');
+  Location = {
+    requestForegroundPermissionsAsync: async () => ({ status: 'granted' }),
+    getCurrentPositionAsync: async () => ({
+      coords: {
+        latitude: 48.8584,
+        longitude: 2.2945
+      }
+    }),
+    Accuracy: {
+      Highest: 6
+    },
+    watchPositionAsync: async () => ({
+      remove: () => {}
+    }),
+  };
+}
 
 // Interfaces
 export interface Coordinate {
@@ -40,6 +62,9 @@ export interface RouteDetails {
  * Navigation service using Google Maps APIs
  */
 export class NavigationService {
+  // Instance properties for use with the hook
+  private currentRoute: RouteDetails | null = null;
+  
   /**
    * Request location permissions
    */
@@ -289,6 +314,21 @@ export class NavigationService {
       return null;
     }
   }
+  
+  // Constructor to support instance usage
+  constructor() {
+    // Initialization if needed
+  }
+  
+  // Instance method to get current route (for use with hooks)
+  public getCurrentRoute(): RouteDetails | null {
+    return this.currentRoute;
+  }
+  
+  // Set current route (for use with hooks)
+  public setCurrentRoute(route: RouteDetails | null): void {
+    this.currentRoute = route;
+  }
 }
 
 // React hook for using the navigation service
@@ -300,6 +340,8 @@ export function useNavigation() {
   const [isNavigating, setIsNavigating] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  
+  const navigationService = new NavigationService();
   
   // Get current position
   const getCurrentPosition = useCallback(async (): Promise<Coordinate | null> => {
@@ -327,7 +369,7 @@ export function useNavigation() {
   
   // Initialize location tracking when component mounts
   useEffect(() => {
-    let locationSubscription: Location.LocationSubscription | null = null;
+    let locationSubscription: any = null;
     
     const setupLocationTracking = async () => {
       try {
@@ -348,7 +390,7 @@ export function useNavigation() {
             accuracy: Location.Accuracy.Highest,
             distanceInterval: 5, // Update every 5 meters
           },
-          (location) => {
+          (location: any) => {
             const newPosition = {
               latitude: location.coords.latitude,
               longitude: location.coords.longitude,
@@ -376,7 +418,7 @@ export function useNavigation() {
               ) {
                 // Navigation completed
                 setIsNavigating(false);
-                Alert.alert('Arrived', 'You have reached your destination');
+                Alert.alert('Arrivée', 'Vous êtes arrivé à destination');
               }
             }
           }
@@ -428,6 +470,7 @@ export function useNavigation() {
         
         setDestination(destinationCoord);
         setCurrentRoute(route);
+        navigationService.setCurrentRoute(route);
         setCurrentStepIndex(0);
         setIsNavigating(true);
         
@@ -447,6 +490,7 @@ export function useNavigation() {
   const stopNavigation = useCallback(() => {
     setIsNavigating(false);
     setCurrentRoute(null);
+    navigationService.setCurrentRoute(null);
     setCurrentStepIndex(0);
   }, []);
   

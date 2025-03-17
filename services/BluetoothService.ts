@@ -2,6 +2,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Platform, PermissionsAndroid } from 'react-native';
 
+
 // UUID constants for services and characteristics
 // These would need to be replaced with the actual UUIDs of your smart glasses
 const GLASSES_SERVICE_UUID = '4fafc201-1fb5-459e-8fcc-c5c9c331914b';
