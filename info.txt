@@ -1,0 +1,148 @@
+    Directory: C:\Users\mathb\Desktop\SmartGlasses
+
+Mode                 LastWriteTime         Length Name
+----                 -------------         ------ ----
+-a---          15/03/2025    14:07             54 .env
+-a---          13/04/2025    01:50            448 .gitignore
+-a---          17/03/2025    12:24            303 app.config.js
+-a---          13/04/2025    00:40           7466 info.txt
+-a---          13/04/2025    01:17         516281 package-lock.json
+-a---          13/04/2025    01:17           1673 package.json
+-a---          17/03/2025    12:23            216 tsconfig.json
+
+    Directory: C:\Users\mathb\Desktop\SmartGlasses\.expo
+
+Mode                 LastWriteTime         Length Name
+----                 -------------         ------ ----
+-a---          14/03/2025    19:00             20 devices.json
+-a---          14/03/2025    19:00            751 README.md
+
+    Directory: C:\Users\mathb\Desktop\SmartGlasses\.expo\types
+
+Mode                 LastWriteTime         Length Name
+----                 -------------         ------ ----
+-a---          17/03/2025    12:21           2820 router.d.ts
+
+    Directory: C:\Users\mathb\Desktop\SmartGlasses\.expo\web\cache\production\images\favicon\favicon-24272cdaeff82cc5fa
+cdaccd982a6f05b60c4504704bbf94c19a6388659880bb-contain-transparent
+
+Mode                 LastWriteTime         Length Name
+----                 -------------         ------ ----
+-a---          15/03/2025    11:04           2919 favicon-48.png
+
+    Directory: C:\Users\mathb\Desktop\SmartGlasses\app
+
+Mode                 LastWriteTime         Length Name
+----                 -------------         ------ ----
+-a---          17/03/2025    12:19           1762 _layout.tsx
+-a---          26/10/1985    10:15           1389 +html.tsx
+-a---          26/10/1985    10:15            836 +not-found.tsx
+-a---          14/03/2025    18:59            551 debug.tsx
+-a---          26/10/1985    10:15            923 modal.tsx
+
+    Directory: C:\Users\mathb\Desktop\SmartGlasses\app\(tabs)
+
+Mode                 LastWriteTime         Length Name
+----                 -------------         ------ ----
+-a---          14/03/2025    18:58            813 _layout.tsx
+-a---          13/04/2025    00:53          15305 camera.tsx
+-a---          15/03/2025    13:07          11725 explore.tsx
+-a---          13/04/2025    00:53          26812 index.tsx
+
+    Directory: C:\Users\mathb\Desktop\SmartGlasses\assets\fonts
+
+Mode                 LastWriteTime         Length Name
+----                 -------------         ------ ----
+-a---          26/10/1985    10:15          93252 SpaceMono-Regular.ttf
+
+    Directory: C:\Users\mathb\Desktop\SmartGlasses\assets\images
+
+Mode                 LastWriteTime         Length Name
+----                 -------------         ------ ----
+-a---          26/10/1985    10:15          17547 adaptive-icon.png
+-a---          26/10/1985    10:15           1466 favicon.png
+-a---          26/10/1985    10:15          22380 icon.png
+-a---          26/10/1985    10:15          17547 splash-icon.png
+
+    Directory: C:\Users\mathb\Desktop\SmartGlasses\components
+
+Mode                 LastWriteTime         Length Name
+----                 -------------         ------ ----
+-a---          15/03/2025    13:00          22776 BluetoothConnection.tsx
+-a---          26/10/1985    10:15           2035 EditScreenInfo.tsx
+-a---          26/10/1985    10:15            724 ExternalLink.tsx
+-a---          26/10/1985    10:15            173 StyledText.tsx
+-a---          26/10/1985    10:15           1329 Themed.tsx
+-a---          26/10/1985    10:15            190 useClientOnlyValue.ts
+-a---          26/10/1985    10:15            368 useClientOnlyValue.web.ts
+-a---          26/10/1985    10:15             47 useColorScheme.ts
+-a---          26/10/1985    10:15            472 useColorScheme.web.ts
+
+    Directory: C:\Users\mathb\Desktop\SmartGlasses\components\accessibility
+
+Mode                 LastWriteTime         Length Name
+----                 -------------         ------ ----
+-a---          13/04/2025    01:44          25504 Advanced3DObstacleDetection.tsx
+-a---          13/04/2025    01:46          33455 ColorRecognitionAssistant.tsx
+-a---          21/03/2025    11:00          23018 EnhancedSignLanguageRecognition.tsx
+-a---          13/04/2025    01:40          33396 FaceRecognitionAssistant.tsx
+-a---          13/04/2025    01:29          43871 HearingAidIntegration.tsx
+-a---          15/03/2025    12:56           8740 RealTimeTranslation.tsx
+-a---          15/03/2025    12:54          13646 SignLanguageRecognition.tsx
+-a---          15/03/2025    12:54          16088 VoiceAssistant.tsx
+-a---          13/04/2025    00:32          29552 VoiceTranslator.tsx
+
+    Directory: C:\Users\mathb\Desktop\SmartGlasses\components\navigation
+
+Mode                 LastWriteTime         Length Name
+----                 -------------         ------ ----
+-a---          13/04/2025    00:30          19211 ARNavigation.tsx
+-a---          21/03/2025    10:49          16603 EnhancedNavigation.tsx
+
+    Directory: C:\Users\mathb\Desktop\SmartGlasses\components\navigation\safety
+
+Mode                 LastWriteTime         Length Name
+----                 -------------         ------ ----
+-a---          13/04/2025    01:41          55117 EmergencyAssistanceModule.tsx
+
+    Directory: C:\Users\mathb\Desktop\SmartGlasses\components\ui
+
+Mode                 LastWriteTime         Length Name
+----                 -------------         ------ ----
+-a---          15/03/2025    11:01           1343 ThemedText.tsx
+-a---          15/03/2025    11:03            633 ThemedView.tsx
+
+    Directory: C:\Users\mathb\Desktop\SmartGlasses\components\__tests__
+
+Mode                 LastWriteTime         Length Name
+----                 -------------         ------ ----
+-a---          26/10/1985    10:15            269 StyledText-test.js
+
+    Directory: C:\Users\mathb\Desktop\SmartGlasses\constants
+
+Mode                 LastWriteTime         Length Name
+----                 -------------         ------ ----
+-a---          26/10/1985    10:15            380 Colors.ts
+
+    Directory: C:\Users\mathb\Desktop\SmartGlasses\services
+
+Mode                 LastWriteTime         Length Name
+----                 -------------         ------ ----
+-a---          17/03/2025    12:24           1031 ApiConfig.ts
+-a---          17/03/2025    11:58           1330 AuthService.ts
+-a---          17/03/2025    13:11          19216 BluetoothService.ts
+-a---          17/03/2025    13:40           9069 GuidanceService.ts
+-a---          17/03/2025    11:36           2174 HardwareProtocol.ts
+-a---          17/03/2025    13:42          17902 NavigationService.ts
+-a---          17/03/2025    11:58          10093 ObstacleDetectionService.ts
+-a---          17/03/2025    11:36           3270 PowerManagementService.ts
+-a---          17/03/2025    13:05           6060 TelemetryService.ts
+-a---          17/03/2025    11:40          11152 TestPlanService.ts
+-a---          17/03/2025    12:03           6716 TranslationService.ts
+-a---          15/03/2025    14:07          11100 VoiceAssistantService.ts
+
+    Directory: C:\Users\mathb\Desktop\SmartGlasses\types
+
+Mode                 LastWriteTime         Length Name
+----                 -------------         ------ ----
+-a---          17/03/2025    12:09             89 env.d.ts

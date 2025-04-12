@@ -1,268 +1,376 @@
-// components/navigation/ARNavigation.tsx
+// components/navigation/ARPathNavigation.tsx
 import React, { useState, useEffect, useRef } from 'react';
 import { 
   View, 
   StyleSheet, 
   TouchableOpacity, 
-  TextInput,
-  ActivityIndicator,
   Alert,
   Platform,
-  Switch
+  Dimensions,
+  Animated
 } from 'react-native';
 import { CameraView, CameraType } from 'expo-camera';
+import * as Location from 'expo-location';
+import * as Haptics from 'expo-haptics';
+import { Ionicons, FontAwesome5 } from '@expo/vector-icons';
+import { BluetoothService, HapticFeedbackType } from '../../services/BluetoothService';
+import NavigationService, { Coordinate, RouteDetails } from '../../services/NavigationService';
 import { ThemedText } from '../ui/ThemedText';
 import { ThemedView } from '../ui/ThemedView';
-import { Ionicons, FontAwesome5 } from '@expo/vector-icons';
-import NavigationService, { TransportMode } from '../../services/NavigationService';
 
-// Define coordinate interface without creating a conflict
-interface NavigationCoordinate {
-  latitude: number;
-  longitude: number;
-}
-
-type NavigationProps = {
+interface ARPathNavigationProps {
   onClose?: () => void;
-  initialDestination?: string;
+  destination?: string | Coordinate;
   wheelchairMode?: boolean;
-};
-
-// Mock direction data for demo
-interface MockDirection {
-  direction: string;
-  distance: string;
-  nextTurn: string;
-  estimatedArrivalTime: string;
 }
 
-export const ARNavigation: React.FC<NavigationProps> = ({
+const SCREEN_WIDTH = Dimensions.get('window').width;
+const SCREEN_HEIGHT = Dimensions.get('window').height;
+
+export const ARPathNavigation: React.FC<ARPathNavigationProps> = ({
   onClose,
-  initialDestination,
-  wheelchairMode: initialWheelchairMode = false,
+  destination: initialDestination,
+  wheelchairMode = false
 }) => {
-  // State variables
-  const [currentPosition, setCurrentPosition] = useState<NavigationCoordinate | null>(null);
-  const [destination, setDestination] = useState<string>(initialDestination || '');
+  // Camera and device state
+  const [isCameraReady, setIsCameraReady] = useState(false);
+  const [heading, setHeading] = useState<number | null>(null);
+  const [currentPosition, setCurrentPosition] = useState<Coordinate | null>(null);
+  const [destinationCoords, setDestinationCoords] = useState<Coordinate | null>(null);
+  const [destinationName, setDestinationName] = useState<string>('');
+  const [route, setRoute] = useState<RouteDetails | null>(null);
   const [isNavigating, setIsNavigating] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [wheelchairMode, setWheelchairMode] = useState(initialWheelchairMode);
-  const [transportMode, setTransportMode] = useState<TransportMode>('walking');
-  const [isCameraReady, setIsCameraReady] = useState(false);
-  const [showHeatmapLegend, setShowHeatmapLegend] = useState(false);
+  const [currentStepIndex, setCurrentStepIndex] = useState(0);
+  const [arrowOpacity] = useState(new Animated.Value(1));
+  const [showPathVisualization, setShowPathVisualization] = useState(true);
+  const [enableHapticFeedback, setEnableHapticFeedback] = useState(true);
+  const [enableVoiceGuidance, setEnableVoiceGuidance] = useState(true);
   
-  const cameraRef = useRef<CameraView | null>(null);
+  // Services
+  const bluetoothService = useRef(BluetoothService.getInstance());
+  const navigationService = useRef(NavigationService.getInstance());
   
-  // Mock navigation data
-  const mockDirection: MockDirection = {
-    direction: 'right',
-    distance: '100m',
-    nextTurn: 'Turn right on Main Street',
-    estimatedArrivalTime: '10 minutes'
-  };
-  
-  // Get current position on component mount
+  // Location tracking
   useEffect(() => {
-    if (Platform.OS !== 'web') {
-      getCurrentPosition();
-    } else {
-      // Mock position for web
-      setCurrentPosition({
-        latitude: 48.8584,
-        longitude: 2.2945
-      });
-    }
-  }, []);
-  
-  // Get current position
-  const getCurrentPosition = () => {
-    setIsLoading(true);
-    navigator.geolocation.getCurrentPosition(
-      (position) => {
-        setCurrentPosition({
-          latitude: position.coords.latitude,
-          longitude: position.coords.longitude
-        });
-        setIsLoading(false);
-        setError(null);
-      },
-      (err) => {
-        console.error('Error getting location:', err);
-        setError('Failed to get current location. Please check permissions.');
-        setIsLoading(false);
+    let locationSubscription: any = null;
+    let headingSubscription: any = null;
+    
+    const setupLocationTracking = async () => {
+      try {
+        // Request permissions
+        const { status } = await Location.requestForegroundPermissionsAsync();
         
-        // Set mock position for demo
-        setCurrentPosition({
-          latitude: 48.8584,
-          longitude: 2.2945
+        if (status !== 'granted') {
+          Alert.alert('Permission Denied', 'Location permission is required for navigation');
+          return;
+        }
+        
+        // Start watching position
+        locationSubscription = await Location.watchPositionAsync(
+          {
+            accuracy: Location.Accuracy.BestForNavigation,
+            distanceInterval: 2, // Update every 2 meters
+            timeInterval: 1000 // Update every second
+          },
+          (location) => {
+            const newPosition = {
+              latitude: location.coords.latitude,
+              longitude: location.coords.longitude,
+            };
+            
+            setCurrentPosition(newPosition);
+            
+            // Check if we're navigating and update progress
+            if (isNavigating && route && currentStepIndex < route.steps.length) {
+              updateNavigationProgress(newPosition);
+            }
+          }
+        );
+        
+        // Start watching heading (compass direction)
+        headingSubscription = await Location.watchHeadingAsync((headingData) => {
+          setHeading(headingData.trueHeading);
         });
-      },
-      { enableHighAccuracy: true, timeout: 15000, maximumAge: 10000 }
-    );
+        
+        // Get initial position
+        const initialPosition = await Location.getCurrentPositionAsync({
+          accuracy: Location.Accuracy.BestForNavigation
+        });
+        
+        setCurrentPosition({
+          latitude: initialPosition.coords.latitude,
+          longitude: initialPosition.coords.longitude
+        });
+      } catch (error) {
+        console.error('Error setting up location tracking:', error);
+        Alert.alert('Error', 'Failed to access location services');
+      }
+    };
+    
+    setupLocationTracking();
+    
+    // If initialDestination is provided, start navigation automatically
+    if (initialDestination) {
+      if (typeof initialDestination === 'string') {
+        setDestinationName(initialDestination);
+        geocodeAndNavigate(initialDestination);
+      } else {
+        setDestinationCoords(initialDestination);
+        startNavigation(initialDestination);
+      }
+    }
+    
+    // Animate the arrow opacity for attention
+    const startArrowAnimation = () => {
+      Animated.sequence([
+        Animated.timing(arrowOpacity, {
+          toValue: 0.5,
+          duration: 1000,
+          useNativeDriver: true
+        }),
+        Animated.timing(arrowOpacity, {
+          toValue: 1,
+          duration: 1000,
+          useNativeDriver: true
+        })
+      ]).start(() => startArrowAnimation());
+    };
+    
+    startArrowAnimation();
+    
+    // Cleanup
+    return () => {
+      if (locationSubscription) locationSubscription.remove();
+      if (headingSubscription) headingSubscription.remove();
+    };
+  }, [initialDestination, isNavigating, route, currentStepIndex]);
+  
+  // Update navigation progress based on current position
+  const updateNavigationProgress = (position: Coordinate) => {
+    if (!route || currentStepIndex >= route.steps.length) return;
+    
+    const currentStep = route.steps[currentStepIndex];
+    const distanceToStep = NavigationService.calculateDistance(position, currentStep.coordinate);
+    
+    // Provide haptic feedback as user gets closer to turn
+    if (enableHapticFeedback) {
+      if (distanceToStep < 30 && distanceToStep > 20) {
+        // Approaching turn - light feedback
+        bluetoothService.current.sendHapticFeedback(HapticFeedbackType.SHORT, 40);
+      } else if (distanceToStep < 20 && distanceToStep > 10) {
+        // Getting closer - medium feedback
+        bluetoothService.current.sendHapticFeedback(HapticFeedbackType.MEDIUM, 60);
+      } else if (distanceToStep < 10) {
+        // Very close - strong directional feedback
+        const directionalFeedback = getDirectionalHapticFeedback(currentStep.maneuver);
+        bluetoothService.current.sendHapticFeedback(directionalFeedback, 100);
+      }
+    }
+    
+    // Move to next step if within 5 meters of current step
+    if (distanceToStep < 5 && currentStepIndex < route.steps.length - 1) {
+      const nextStep = route.steps[currentStepIndex + 1];
+      setCurrentStepIndex(currentStepIndex + 1);
+      
+      // Announce new step with voice guidance if enabled
+      if (enableVoiceGuidance) {
+        announceNavigationStep(nextStep.instruction, nextStep.distance);
+      }
+    }
+    
+    // Check for arrival at final destination
+    if (currentStepIndex === route.steps.length - 1 && distanceToStep < 10) {
+      Alert.alert('Destination Reached', 'You have arrived at your destination');
+      
+      // Provide success feedback
+      if (enableHapticFeedback) {
+        bluetoothService.current.sendHapticFeedback(HapticFeedbackType.SUCCESS, 100);
+      }
+      
+      setIsNavigating(false);
+    }
   };
   
-  // Start navigation
-  const startNavigation = () => {
-    if (!destination.trim()) {
-      Alert.alert('Navigation Error', 'Please enter a destination');
+  // Convert maneuver to appropriate haptic feedback type
+  const getDirectionalHapticFeedback = (maneuver: string): HapticFeedbackType => {
+    switch (maneuver) {
+      case 'turn-left':
+        return HapticFeedbackType.LEFT_DIRECTION;
+      case 'turn-right':
+        return HapticFeedbackType.RIGHT_DIRECTION;
+      case 'straight':
+        return HapticFeedbackType.STRAIGHT_DIRECTION;
+      default:
+        return HapticFeedbackType.MEDIUM;
+    }
+  };
+  
+  // Announce navigation instructions using voice
+  const announceNavigationStep = (instruction: string, distance: number) => {
+    // This would use Speech.speak with proper formatting for distance
+    // Implement the voice feedback here using expo-speech
+    console.log(`Navigation announcement: ${instruction} in ${distance} meters`);
+  };
+  
+  // Geocode a destination string to coordinates
+  const geocodeAndNavigate = async (destinationString: string) => {
+    try {
+      setIsLoading(true);
+      
+      const coordinates = await NavigationService.geocodeAddress(destinationString);
+      
+      if (!coordinates) {
+        Alert.alert('Error', 'Could not find this destination');
+        setIsLoading(false);
+        return;
+      }
+      
+      setDestinationCoords(coordinates);
+      startNavigation(coordinates);
+    } catch (error) {
+      console.error('Geocoding error:', error);
+      Alert.alert('Error', 'Failed to find destination');
+      setIsLoading(false);
+    }
+  };
+  
+  // Start navigation to destination
+  const startNavigation = async (destination: Coordinate) => {
+    if (!currentPosition) {
+      Alert.alert('Error', 'Cannot determine your current location');
       return;
     }
     
-    setIsLoading(true);
-    
-    // Create a navigation service instance
-    const navigationService = NavigationService.getInstance();
-    
-    // First geocode the destination to get coordinates
-    NavigationService.geocodeAddress(destination)
-      .then((destCoords: NavigationCoordinate | null) => {
-        if (!destCoords) {
-          throw new Error('Could not find destination');
-        }
-        
-        // Then get the actual route with wheelchair mode if enabled
-        return navigationService.startNavigation(
-          destCoords,
-          transportMode,
-          wheelchairMode
-        );
-      })
-      .then((route: any) => {
-        if (route) {
-          setIsNavigating(true);
-          // Process route for display
-        } else {
-          Alert.alert('Navigation Error', 'Could not calculate a route');
-        }
-      })
-      .catch((error: Error) => {
-        Alert.alert('Error', error.message);
-      })
-      .finally(() => {
+    try {
+      setIsLoading(true);
+      
+      // Calculate route
+      const newRoute = await NavigationService.getRoute(
+        currentPosition,
+        destination,
+        'walking',
+        wheelchairMode
+      );
+      
+      if (!newRoute) {
+        Alert.alert('Error', 'Could not calculate a route to this destination');
         setIsLoading(false);
-      });
+        return;
+      }
+      
+      setRoute(newRoute);
+      setCurrentStepIndex(0);
+      setIsNavigating(true);
+      
+      // Initial step announcement
+      if (newRoute.steps.length > 0 && enableVoiceGuidance) {
+        const firstStep = newRoute.steps[0];
+        announceNavigationStep(firstStep.instruction, firstStep.distance);
+      }
+      
+      // Success haptic feedback
+      if (enableHapticFeedback) {
+        bluetoothService.current.sendHapticFeedback(HapticFeedbackType.SUCCESS, 80);
+      }
+      
+      setIsLoading(false);
+    } catch (error) {
+      console.error('Navigation error:', error);
+      Alert.alert('Error', 'Failed to start navigation');
+      setIsLoading(false);
+    }
   };
   
   // Stop navigation
   const stopNavigation = () => {
     setIsNavigating(false);
+    setRoute(null);
+    setCurrentStepIndex(0);
+    
+    // Feedback to confirm stop
+    if (enableHapticFeedback) {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+    }
   };
   
-  // Toggle wheelchair mode with haptic feedback
-  const toggleWheelchairMode = () => {
-    setWheelchairMode((prev: boolean) => !prev);
-    // In a real app, we would provide haptic feedback here
-  };
-  
-  // Render direction arrow
-  const renderDirectionArrow = () => {
-    if (!isNavigating) return null;
+  // Render path visualization (arrows and direction indicators)
+  const renderPathVisualization = () => {
+    if (!isNavigating || !route || !heading || !showPathVisualization) return null;
+    
+    const currentStep = route.steps[currentStepIndex];
+    if (!currentStep) return null;
+    
+    // Calculate bearing (direction) to next step
+    const bearingToTarget = currentPosition ? 
+      NavigationService.calculateBearing(currentPosition, currentStep.coordinate) : 0;
+    
+    // Calculate the relative angle (where user needs to turn)
+    // heading is where the device is pointing, bearingToTarget is where they need to go
+    const relativeAngle = bearingToTarget - heading;
+    const normalizedAngle = ((relativeAngle + 360) % 360) - 180; // Convert to -180 to 180 range
+    
+    // Determine the arrow direction based on angle
+    let arrowDirection: 'forward' | 'left' | 'right' | 'back' = 'forward';
+    if (normalizedAngle > 30 && normalizedAngle < 150) {
+      arrowDirection = 'right';
+    } else if (normalizedAngle < -30 && normalizedAngle > -150) {
+      arrowDirection = 'left';
+    } else if (Math.abs(normalizedAngle) > 150) {
+      arrowDirection = 'back';
+    }
+    
+    // Get arrow icon based on direction
+    const getArrowIcon = () => {
+      switch (arrowDirection) {
+        case 'forward':
+          return 'arrow-up';
+        case 'left':
+          return 'arrow-back';
+        case 'right':
+          return 'arrow-forward';
+        case 'back':
+          return 'arrow-down';
+      }
+    };
+    
+    const distanceToStep = currentPosition ? 
+      NavigationService.calculateDistance(currentPosition, currentStep.coordinate) : 0;
     
     return (
-      <View style={styles.arrowContainer}>
-        <View style={styles.arrow}>
-          <Ionicons 
-            name={mockDirection.direction === 'right' ? 'arrow-forward' : 
-                 mockDirection.direction === 'left' ? 'arrow-back' : 'arrow-up'} 
-            size={60} 
-            color="#FFDD00" 
-          />
-        </View>
-        <ThemedText style={styles.distanceText}>
-          {mockDirection.distance}
-        </ThemedText>
-        <ThemedText style={styles.nextTurnText}>
-          {mockDirection.nextTurn}
-        </ThemedText>
-      </View>
-    );
-  };
-  
-  // Render ETA
-  const renderETA = () => {
-    if (!isNavigating) return null;
-    
-    return (
-      <View style={styles.etaContainer}>
-        <Ionicons name="time-outline" size={20} color="white" />
-        <ThemedText style={styles.etaText}>
-          ETA: {mockDirection.estimatedArrivalTime}
-        </ThemedText>
-      </View>
-    );
-  };
-  
-  // Render accessibility heatmap (mock data for wheelchair accessibility)
-  const renderAccessibilityHeatmap = () => {
-    if (!wheelchairMode || !isNavigating) return null;
-    
-    return (
-      <View style={styles.heatmapContainer}>
-        {/* This would be replaced with actual heatmap visualization */}
-        <TouchableOpacity 
-          style={styles.heatmapLegendButton}
-          onPress={() => setShowHeatmapLegend(!showHeatmapLegend)}
+      <View style={styles.pathVisualizationContainer}>
+        {/* Direction arrow */}
+        <Animated.View 
+          style={[
+            styles.directionArrow,
+            { opacity: arrowOpacity }
+          ]}
         >
-          <FontAwesome5 name="wheelchair" size={16} color="white" />
-          <ThemedText style={styles.heatmapButtonText}>
-            Accessibility
+          <Ionicons name={getArrowIcon()} size={60} color="#FFDD00" />
+        </Animated.View>
+        
+        {/* Distance and instruction */}
+        <View style={styles.directionInfoContainer}>
+          <ThemedText style={styles.distanceText}>
+            {Math.round(distanceToStep)}m
           </ThemedText>
-        </TouchableOpacity>
+          <ThemedText style={styles.instructionText}>
+            {currentStep.instruction}
+          </ThemedText>
+        </View>
         
-        {showHeatmapLegend && (
-          <View style={styles.heatmapLegend}>
-            <View style={styles.legendItem}>
-              <View style={[styles.legendColor, { backgroundColor: '#00FF00' }]} />
-              <ThemedText style={styles.legendText}>Good accessibility</ThemedText>
-            </View>
-            <View style={styles.legendItem}>
-              <View style={[styles.legendColor, { backgroundColor: '#FFFF00' }]} />
-              <ThemedText style={styles.legendText}>Moderate challenges</ThemedText>
-            </View>
-            <View style={styles.legendItem}>
-              <View style={[styles.legendColor, { backgroundColor: '#FF0000' }]} />
-              <ThemedText style={styles.legendText}>Poor accessibility</ThemedText>
-            </View>
-          </View>
-        )}
-      </View>
-    );
-  };
-  
-  // Render transport mode selector
-  const renderTransportModes = () => {
-    return (
-      <View style={styles.transportModeContainer}>
-        <TouchableOpacity
-          style={[
-            styles.transportModeButton,
-            transportMode === 'walking' && styles.activeTransportButton
-          ]}
-          onPress={() => setTransportMode('walking')}
-        >
-          <Ionicons name="walk-outline" size={24} color="white" />
-        </TouchableOpacity>
-        
-        <TouchableOpacity
-          style={[
-            styles.transportModeButton,
-            transportMode === 'bicycling' && styles.activeTransportButton
-          ]}
-          onPress={() => setTransportMode('bicycling')}
-        >
-          <Ionicons name="bicycle-outline" size={24} color="white" />
-        </TouchableOpacity>
-        
-        <TouchableOpacity
-          style={[
-            styles.transportModeButton,
-            transportMode === 'driving' && styles.activeTransportButton
-          ]}
-          onPress={() => setTransportMode('driving')}
-        >
-          <Ionicons name="car-outline" size={24} color="white" />
-        </TouchableOpacity>
+        {/* Draw dots showing the path ahead (simplified visualization) */}
+        <View style={styles.pathDotsContainer}>
+          {route.steps.slice(currentStepIndex, currentStepIndex + 3).map((step, index) => (
+            <View 
+              key={index} 
+              style={[
+                styles.pathDot,
+                index === 0 && styles.currentPathDot
+              ]} 
+            />
+          ))}
+        </View>
       </View>
     );
   };
@@ -270,74 +378,47 @@ export const ARNavigation: React.FC<NavigationProps> = ({
   return (
     <ThemedView style={styles.container}>
       <CameraView
-        ref={cameraRef}
         style={styles.camera}
         facing={'back' as CameraType}
         onCameraReady={() => setIsCameraReady(true)}
       >
-        {/* Destination input */}
-        {!isNavigating && (
-          <View style={styles.inputContainer}>
-            <TextInput
-              style={styles.destinationInput}
-              placeholder="Enter destination..."
-              value={destination}
-              onChangeText={setDestination}
-              placeholderTextColor="#999"
-            />
-            <TouchableOpacity 
-              style={styles.startButton}
-              onPress={startNavigation}
-              disabled={isLoading || destination.trim() === ''}
-            >
-              {isLoading ? (
-                <ActivityIndicator size="small" color="white" />
-              ) : (
-                <ThemedText style={styles.startButtonText}>Go</ThemedText>
-              )}
-            </TouchableOpacity>
-          </View>
-        )}
+        {/* Path visualization overlay */}
+        {renderPathVisualization()}
         
-        {/* AR direction arrow */}
-        {renderDirectionArrow()}
-        
-        {/* ETA display */}
-        {renderETA()}
-        
-        {/* Accessibility heatmap */}
-        {renderAccessibilityHeatmap()}
-        
-        {/* Transport mode selector */}
-        {renderTransportModes()}
-        
-        {/* Wheelchair mode toggle */}
-        <View style={styles.wheelchairModeContainer}>
-          <FontAwesome5 name="wheelchair" size={20} color="white" />
-          <ThemedText style={styles.wheelchairModeText}>
-            Wheelchair Mode
-          </ThemedText>
-          <Switch
-            value={wheelchairMode}
-            onValueChange={toggleWheelchairMode}
-            trackColor={{ false: '#767577', true: '#4CAF50' }}
-            thumbColor={wheelchairMode ? '#8BC34A' : '#f4f3f4'}
-          />
-        </View>
-        
-        {/* Navigation controls */}
-        <View style={styles.controls}>
-          {isNavigating ? (
-            <TouchableOpacity 
-              style={styles.stopButton}
-              onPress={stopNavigation}
-            >
-              <ThemedText style={styles.stopButtonText}>
-                Stop Navigation
+        {/* Navigation controls and info */}
+        <View style={styles.controlsContainer}>
+          {/* Show destination and ETA if navigating */}
+          {isNavigating && route && (
+            <View style={styles.navigationInfoCard}>
+              <ThemedText style={styles.destinationText}>
+                {destinationName || 'Destination'}
               </ThemedText>
-            </TouchableOpacity>
-          ) : null}
+              <ThemedText style={styles.etaText}>
+                ETA: {Math.ceil(route.duration / 60)} min ({(route.distance / 1000).toFixed(1)} km)
+              </ThemedText>
+              
+              <TouchableOpacity 
+                style={styles.stopButton}
+                onPress={stopNavigation}
+              >
+                <ThemedText style={styles.stopButtonText}>End Navigation</ThemedText>
+              </TouchableOpacity>
+            </View>
+          )}
           
+          {/* Toggle button for path visualization */}
+          <TouchableOpacity
+            style={styles.togglePathButton}
+            onPress={() => setShowPathVisualization(!showPathVisualization)}
+          >
+            <Ionicons 
+              name={showPathVisualization ? "eye" : "eye-off"} 
+              size={24} 
+              color="white" 
+            />
+          </TouchableOpacity>
+          
+          {/* Close button */}
           {onClose && (
             <TouchableOpacity 
               style={styles.closeButton}
@@ -347,6 +428,27 @@ export const ARNavigation: React.FC<NavigationProps> = ({
             </TouchableOpacity>
           )}
         </View>
+        
+        {/* Wheelchair mode indicator */}
+        {wheelchairMode && (
+          <View style={styles.wheelchairModeIndicator}>
+            <FontAwesome5 name="wheelchair" size={20} color="#4CAF50" />
+            <ThemedText style={styles.wheelchairModeText}>
+              Wheelchair Mode Active
+            </ThemedText>
+          </View>
+        )}
+        
+        {/* Loading indicator */}
+        {isLoading && (
+          <View style={styles.loadingOverlay}>
+            <View style={styles.loadingContainer}>
+              <ThemedText style={styles.loadingText}>
+                Calculating route...
+              </ThemedText>
+            </View>
+          </View>
+        )}
       </CameraView>
     </ThemedView>
   );
@@ -359,190 +461,145 @@ const styles = StyleSheet.create({
   camera: {
     flex: 1,
   },
-  inputContainer: {
+  pathVisualizationContainer: {
     position: 'absolute',
-    top: 50,
-    left: 20,
-    right: 20,
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  destinationInput: {
-    flex: 1,
-    backgroundColor: 'rgba(255, 255, 255, 0.9)',
-    borderRadius: 30,
-    paddingHorizontal: 20,
-    paddingVertical: 12,
-    fontSize: 16,
-    color: '#333',
-  },
-  startButton: {
-    backgroundColor: '#4CAF50',
-    width: 50,
-    height: 50,
-    borderRadius: 25,
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginLeft: 10,
-  },
-  startButtonText: {
-    color: 'white',
-    fontWeight: 'bold',
-    fontSize: 16,
-  },
-  arrowContainer: {
-    position: 'absolute',
-    top: '40%',
+    top: 0,
     left: 0,
     right: 0,
+    bottom: 0,
     alignItems: 'center',
-  },
-  arrow: {
-    width: 80,
-    height: 80,
-    borderRadius: 40,
-    backgroundColor: 'rgba(0, 0, 0, 0.7)',
     justifyContent: 'center',
+  },
+  directionArrow: {
+    width: 100,
+    height: 100,
+    backgroundColor: 'rgba(0, 0, 0, 0.6)',
+    borderRadius: 50,
     alignItems: 'center',
+    justifyContent: 'center',
+  },
+  directionInfoContainer: {
+    backgroundColor: 'rgba(0, 0, 0, 0.6)',
+    padding: 15,
+    borderRadius: 10,
+    marginTop: 20,
+    alignItems: 'center',
+    maxWidth: '80%',
   },
   distanceText: {
     color: 'white',
-    fontSize: 24,
+    fontSize: 32,
     fontWeight: 'bold',
-    marginTop: 10,
-    backgroundColor: 'rgba(0, 0, 0, 0.7)',
-    paddingHorizontal: 20,
-    paddingVertical: 5,
-    borderRadius: 20,
   },
-  nextTurnText: {
+  instructionText: {
     color: 'white',
     fontSize: 16,
+    textAlign: 'center',
     marginTop: 10,
-    backgroundColor: 'rgba(0, 0, 0, 0.7)',
-    paddingHorizontal: 15,
-    paddingVertical: 5,
-    borderRadius: 15,
   },
-  etaContainer: {
-    position: 'absolute',
-    top: 50,
-    right: 20,
-    backgroundColor: 'rgba(0, 0, 0, 0.7)',
+  pathDotsContainer: {
     flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 15,
-    paddingVertical: 8,
-    borderRadius: 20,
+    marginTop: 20,
+  },
+  pathDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: 'rgba(255, 255, 255, 0.5)',
+    marginHorizontal: 5,
+  },
+  currentPathDot: {
+    backgroundColor: '#FFDD00',
+    width: 14,
+    height: 14,
+    borderRadius: 7,
+  },
+  controlsContainer: {
+    position: 'absolute',
+    top: 40,
+    left: 20,
+    right: 20,
+  },
+  navigationInfoCard: {
+    backgroundColor: 'rgba(0, 0, 0, 0.7)',
+    borderRadius: 10,
+    padding: 15,
+    marginBottom: 20,
+  },
+  destinationText: {
+    color: 'white',
+    fontSize: 18,
+    fontWeight: 'bold',
   },
   etaText: {
     color: 'white',
     fontSize: 14,
-    marginLeft: 5,
-  },
-  controls: {
-    position: 'absolute',
-    bottom: 30,
-    left: 0,
-    right: 0,
-    alignItems: 'center',
+    marginTop: 5,
   },
   stopButton: {
     backgroundColor: '#F44336',
-    paddingHorizontal: 20,
-    paddingVertical: 12,
-    borderRadius: 30,
+    borderRadius: 5,
+    padding: 8,
+    marginTop: 10,
+    alignItems: 'center',
   },
   stopButtonText: {
     color: 'white',
     fontWeight: 'bold',
-    fontSize: 16,
+  },
+  togglePathButton: {
+    position: 'absolute',
+    top: 0,
+    right: 60,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   closeButton: {
     position: 'absolute',
-    bottom: 100,
-    right: 20,
-    backgroundColor: 'rgba(0, 0, 0, 0.7)',
-    width: 50,
-    height: 50,
-    borderRadius: 25,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  transportModeContainer: {
-    position: 'absolute',
-    left: 20,
-    bottom: 100,
-    flexDirection: 'column',
-    gap: 10,
-  },
-  transportModeButton: {
-    width: 50,
-    height: 50,
-    borderRadius: 25,
-    backgroundColor: 'rgba(0, 0, 0, 0.7)',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  activeTransportButton: {
-    backgroundColor: '#2196F3',
-  },
-  wheelchairModeContainer: {
-    position: 'absolute',
-    bottom: 100,
-    right: 20,
-    backgroundColor: 'rgba(0, 0, 0, 0.7)',
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 15,
-    paddingVertical: 8,
+    top: 0,
+    right: 10,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    width: 40,
+    height: 40,
     borderRadius: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  wheelchairModeText: {
-    color: 'white',
-    fontSize: 14,
-    marginLeft: 8,
-    marginRight: 8,
-  },
-  heatmapContainer: {
+  wheelchairModeIndicator: {
     position: 'absolute',
     top: 100,
     right: 20,
-  },
-  heatmapLegendButton: {
     backgroundColor: 'rgba(0, 0, 0, 0.7)',
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 15,
-    paddingVertical: 8,
     borderRadius: 20,
-  },
-  heatmapButtonText: {
-    color: 'white',
-    fontSize: 14,
-    marginLeft: 8,
-  },
-  heatmapLegend: {
-    backgroundColor: 'rgba(0, 0, 0, 0.7)',
-    padding: 10,
-    borderRadius: 10,
-    marginTop: 10,
-  },
-  legendItem: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: 5,
+    paddingVertical: 5,
+    paddingHorizontal: 10,
   },
-  legendColor: {
-    width: 16,
-    height: 16,
-    borderRadius: 8,
-    marginRight: 8,
-  },
-  legendText: {
+  wheelchairModeText: {
     color: 'white',
+    marginLeft: 5,
     fontSize: 12,
+  },
+  loadingOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  loadingContainer: {
+    backgroundColor: 'rgba(0, 0, 0, 0.8)',
+    borderRadius: 10,
+    padding: 20,
+  },
+  loadingText: {
+    color: 'white',
+    fontSize: 16,
   },
 });
 
-export default ARNavigation;
+export default ARPathNavigation;

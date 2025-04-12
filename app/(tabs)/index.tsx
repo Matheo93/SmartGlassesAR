@@ -20,7 +20,7 @@ import { Ionicons, FontAwesome5 } from '@expo/vector-icons';
 import { router } from 'expo-router';
 
 // Composants de fonctionnalités
-import { VoiceTranslator } from '../../components/accessibility/VoiceTranslator';
+import VoiceTranslator from '../../components/accessibility/VoiceTranslator';
 import { EnhancedNavigation } from '../../components/navigation/EnhancedNavigation';
 import { EnhancedSignLanguageRecognition } from '../../components/accessibility/EnhancedSignLanguageRecognition';
 import { BluetoothConnection } from '../../components/BluetoothConnection';
