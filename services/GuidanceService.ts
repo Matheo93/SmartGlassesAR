@@ -205,7 +205,7 @@ export class GuidanceService {
   // Fournit un retour haptique directionnel
 // In GuidanceService.ts - implement haptic feedback
 private async provideDirectionalHapticFeedback(
-  maneuver: 'straight' | 'turn-left' | 'turn-right' | 'uturn' | 'arrive' | 'depart'
+  maneuver: 'straight' | 'turn-left' | 'turn-right' | 'uturn' | 'arrive' | 'depart' | 'ramp' | 'elevator'
 ): Promise<void> {
   try {
     let feedbackType: HapticFeedbackType;
@@ -225,6 +225,24 @@ private async provideDirectionalHapticFeedback(
         break;
       case 'depart':
         feedbackType = HapticFeedbackType.SHORT;
+        break;
+      case 'ramp':
+        // Séquence spéciale pour les rampes
+        await this.bluetoothService.sendHapticFeedback(
+          HapticFeedbackType.STRAIGHT_DIRECTION,
+          80
+        );
+        await new Promise(resolve => setTimeout(resolve, 300));
+        feedbackType = HapticFeedbackType.SHORT;
+        break;
+      case 'elevator':
+        // Séquence spéciale pour les ascenseurs
+        await this.bluetoothService.sendHapticFeedback(
+          HapticFeedbackType.MEDIUM,
+          70
+        );
+        await new Promise(resolve => setTimeout(resolve, 500));
+        feedbackType = HapticFeedbackType.MEDIUM;
         break;
       case 'uturn':
         // Séquence de deux impulsions gauche pour faire demi-tour

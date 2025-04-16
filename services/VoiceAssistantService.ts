@@ -1,53 +1,119 @@
-// services/VoiceAssistantService.ts
-import { useState, useEffect, useCallback } from 'react';
+// VoiceAssistantService.ts - Service de reconnaissance vocale et de traduction
 import { Audio } from 'expo-av';
 import * as FileSystem from 'expo-file-system';
 import * as Speech from 'expo-speech';
+import { Platform } from 'react-native';
 import ApiConfig from './ApiConfig';
 
+// Types pour les résultats de reconnaissance vocale
 export type SpeechRecognitionResult = {
   transcript: string;
   confidence: number;
   isFinal: boolean;
+  detectedLanguage?: string;
 };
 
+// Type pour les commandes vocales
 export type VoiceCommand = {
   command: string;
   action: () => void;
   aliases?: string[];
 };
 
+// Options d'environnement audio
+export type AudioEnvironment = 'quiet' | 'noisy' | 'outdoor' | 'indoor';
+
 /**
- * Service for voice recognition and speech synthesis
+ * Service de reconnaissance vocale et traduction
+ * Implémente la reconnaissance vocale via Cloud Speech-to-Text
+ * et la traduction via Cloud Translation API
  */
 export class VoiceAssistantService {
   private static recording: Audio.Recording | null = null;
+  private static audioContext: AudioContext | null = null;
+  private static noiseReductionLevel: number = 50; // 0-100
+  private static speechEnhancementLevel: number = 70; // 0-100
+  private static lastDetectedLanguage: string | null = null;
   
-  /**
-   * Request audio recording permissions
-   */
-  static async requestPermissions(): Promise<boolean> {
+  // Initialiser le traitement audio
+  static async initializeAudioProcessing(): Promise<boolean> {
     try {
-      const { granted } = await Audio.requestPermissionsAsync();
-      return granted;
+      if (typeof AudioContext !== 'undefined') {
+        this.audioContext = new AudioContext();
+        return true;
+      }
+      return false;
     } catch (error) {
-      console.error('Error requesting audio permissions:', error);
+      console.error('Échec d\'initialisation du traitement audio:', error);
       return false;
     }
   }
   
-  /**
-   * Start recording audio
-   */
-  static async startRecording(): Promise<void> {
+  // Demander les permissions d'enregistrement audio
+  static async requestPermissions(): Promise<boolean> {
     try {
-      // Check permissions
-      const hasPermission = await this.requestPermissions();
-      if (!hasPermission) {
-        throw new Error('Audio recording permissions not granted');
+      const { status } = await Audio.requestPermissionsAsync();
+      return status === 'granted';
+    } catch (error) {
+      console.error('Erreur lors de la demande de permissions audio:', error);
+      return false;
+    }
+  }
+  
+  // Configurer l'audio pour l'environnement optimal
+  static async configureAudioForEnvironment(environment: AudioEnvironment): Promise<void> {
+    try {
+      let audioMode: any = {
+        allowsRecordingIOS: true,
+        playsInSilentModeIOS: true,
+        staysActiveInBackground: false
+      };
+      
+      // Ajuster la réduction de bruit et l'amélioration de la parole en fonction de l'environnement
+      switch (environment) {
+        case 'noisy':
+          this.noiseReductionLevel = 90;
+          this.speechEnhancementLevel = 85;
+          // Pour iOS, nous pouvons définir le mode d'entrée sur chat vocal pour une meilleure annulation du bruit
+          if (Platform.OS === 'ios') {
+            audioMode = {
+              ...audioMode,
+              interruptionModeIOS: 1,
+              playsInSilentModeIOS: true
+            };
+          }
+          break;
+        case 'outdoor':
+          this.noiseReductionLevel = 80;
+          this.speechEnhancementLevel = 70;
+          break;
+        case 'indoor':
+          this.noiseReductionLevel = 60;
+          this.speechEnhancementLevel = 75;
+          break;
+        case 'quiet':
+        default:
+          this.noiseReductionLevel = 40;
+          this.speechEnhancementLevel = 60;
+          break;
       }
       
-      // Configure audio mode
+      await Audio.setAudioModeAsync(audioMode);
+    } catch (error) {
+      console.error('Erreur lors de la configuration audio:', error);
+    }
+  }
+  
+  // Commencer l'enregistrement
+  static async startRecording(): Promise<void> {
+    try {
+      // Vérifier les permissions
+      const hasPermission = await this.requestPermissions();
+      if (!hasPermission) {
+        throw new Error('Permissions d\'enregistrement audio non accordées');
+      }
+      
+      // Configurer le mode audio
       await Audio.setAudioModeAsync({
         allowsRecordingIOS: true,
         playsInSilentModeIOS: true,
@@ -55,25 +121,20 @@ export class VoiceAssistantService {
         shouldDuckAndroid: true,
       });
       
-      // Start recording
-      const { recording } = await Audio.Recording.createAsync(
-        Audio.RecordingOptionsPresets.HIGH_QUALITY
-      );
-      
+      // Commencer l'enregistrement avec des paramètres optimisés pour la parole
+      const { recording } = await Audio.Recording.createAsync(Audio.RecordingOptionsPresets.HIGH_QUALITY);
       this.recording = recording;
     } catch (error) {
-      console.error('Error starting recording:', error);
+      console.error('Erreur lors du démarrage de l\'enregistrement:', error);
       throw error;
     }
   }
   
-  /**
-   * Stop recording and get the audio file
-   */
+  // Arrêter l'enregistrement
   static async stopRecording(): Promise<string> {
     try {
       if (!this.recording) {
-        throw new Error('No active recording');
+        throw new Error('Pas d\'enregistrement actif');
       }
       
       await this.recording.stopAndUnloadAsync();
@@ -81,19 +142,17 @@ export class VoiceAssistantService {
       this.recording = null;
       
       if (!uri) {
-        throw new Error('Recording URI not available');
+        throw new Error('URI d\'enregistrement non disponible');
       }
       
       return uri;
     } catch (error) {
-      console.error('Error stopping recording:', error);
+      console.error('Erreur lors de l\'arrêt de l\'enregistrement:', error);
       throw error;
     }
   }
   
-  /**
-   * Convert audio file to base64
-   */
+  // Convertir un fichier audio en base64
   static async audioFileToBase64(fileUri: string): Promise<string> {
     try {
       const base64 = await FileSystem.readAsStringAsync(fileUri, {
@@ -102,34 +161,69 @@ export class VoiceAssistantService {
       
       return base64;
     } catch (error) {
-      console.error('Error converting audio to base64:', error);
+      console.error('Erreur lors de la conversion audio en base64:', error);
       throw error;
     }
   }
   
-  /**
-   * Recognize speech in an audio file using Google Cloud Speech-to-Text API
-   */
+  // Convertir un fichier audio en ArrayBuffer pour le traitement
+  static async audioFileToArrayBuffer(fileUri: string): Promise<ArrayBuffer> {
+    try {
+      const fileInfo = await FileSystem.getInfoAsync(fileUri);
+      if (!fileInfo.exists) {
+        throw new Error(`Le fichier n'existe pas: ${fileUri}`);
+      }
+      
+      const fileContents = await FileSystem.readAsStringAsync(fileUri, {
+        encoding: FileSystem.EncodingType.Base64,
+      });
+      
+      const binaryString = atob(fileContents);
+      const len = binaryString.length;
+      const bytes = new Uint8Array(len);
+      for (let i = 0; i < len; i++) {
+        bytes[i] = binaryString.charCodeAt(i);
+      }
+      
+      return bytes.buffer;
+    } catch (error) {
+      console.error('Erreur lors de la conversion audio en ArrayBuffer:', error);
+      throw error;
+    }
+  }
+  
+  // Reconnaissance vocale avec Google Cloud Speech-to-Text avec détection automatique de la langue
   static async recognizeSpeech(
     audioBase64: string,
-    languageCode: string = 'en-US'
+    preferredLanguageCodes?: string[]
   ): Promise<SpeechRecognitionResult | null> {
     try {
-      // Prepare request body
+      // Préparer le corps de la requête
       const body = JSON.stringify({
         config: {
           encoding: 'LINEAR16',
-          sampleRateHertz: 48000,
-          languageCode,
-          enableAutomaticPunctuation: true,
+          sampleRateHertz: 44100,
+          languageCode: this.lastDetectedLanguage || 'en-US', // Langue par défaut ou dernière langue détectée
+          alternativeLanguageCodes: preferredLanguageCodes || ['fr-FR', 'es-ES', 'de-DE'], // Langues à détecter
           model: 'default',
+          enableAutomaticPunctuation: true,
+          enableSpokenPunctuation: true,
+          enableSpokenEmojis: true,
+          speechContexts: [
+            {
+              phrases: ['fauteuil roulant', 'navigation', 'obstacle', 'traduire', 'aide'], // Phrases courantes
+              boost: 10 // Boost pour la reconnaissance de ces phrases
+            }
+          ],
+          profanityFilter: false,
+          enableWordTimeOffsets: false
         },
         audio: {
           content: audioBase64,
         },
       });
       
-      // Call Google Cloud Speech-to-Text API
+      // Appeler l'API Google Cloud Speech-to-Text
       const response = await fetch(
         `${ApiConfig.API_ENDPOINTS.SPEECH_TO_TEXT}?key=${ApiConfig.getApiKey()}`,
         {
@@ -154,67 +248,73 @@ export class VoiceAssistantService {
       
       const result = data.results[0].alternatives[0];
       
+      // Obtenir la langue détectée si disponible
+      let detectedLanguage: string | undefined;
+      if (data.results[0].languageCode) {
+        detectedLanguage = data.results[0].languageCode as string;
+        this.lastDetectedLanguage = detectedLanguage; // Stocker la dernière langue détectée
+      }
+      
       return {
         transcript: result.transcript,
         confidence: result.confidence || 0.5,
         isFinal: true,
+        detectedLanguage
       };
     } catch (error) {
-      console.error('Error recognizing speech:', error);
+      console.error('Erreur lors de la reconnaissance vocale:', error);
       return null;
     }
   }
   
-  /**
-   * Record and recognize speech in one function
-   */
+  // Enregistrer et reconnaître la parole en une seule fonction
   static async recordAndRecognize(
-    languageCode: string = 'en-US'
+    recordDuration: number = 5000, // Durée d'enregistrement en ms
+    preferredLanguageCodes?: string[]
   ): Promise<SpeechRecognitionResult | null> {
     try {
-      // Start recording
+      // Démarrer l'enregistrement
       await this.startRecording();
       
-      // Record for a few seconds
-      await new Promise((resolve) => setTimeout(resolve, 5000));
+      // Enregistrer pendant quelques secondes
+      await new Promise((resolve) => setTimeout(resolve, recordDuration));
       
-      // Stop recording and get audio file
+      // Arrêter l'enregistrement et obtenir le fichier audio
       const audioUri = await this.stopRecording();
       
-      // Convert audio to base64
+      // Convertir l'audio en base64
       const audioBase64 = await this.audioFileToBase64(audioUri);
       
-      // Recognize speech
-      return await this.recognizeSpeech(audioBase64, languageCode);
+      // Reconnaître la parole
+      return await this.recognizeSpeech(audioBase64, preferredLanguageCodes);
     } catch (error) {
-      console.error('Error recording and recognizing speech:', error);
+      console.error('Erreur lors de l\'enregistrement et de la reconnaissance de la parole:', error);
       return null;
     }
   }
   
-  /**
-   * Speak text using device's text-to-speech
-   */
+  // Prononcer du texte en utilisant le système TTS de l'appareil
   static async speak(
     text: string,
     options: Speech.SpeechOptions = {}
   ): Promise<void> {
     try {
+      const defaultLang = this.lastDetectedLanguage ? 
+        this.lastDetectedLanguage : 'en-US';
+        
       await Speech.speak(text, {
-        language: 'en-US',
+        language: defaultLang,
         pitch: 1.0,
         rate: 0.9,
         ...options,
       });
     } catch (error) {
-      console.error('Error speaking text:', error);
+      console.error('Erreur lors de la prononciation du texte:', error);
       throw error;
     }
   }
   
-  /**
-   * Detect if a transcript matches a command
-   */
+  // Détecter si une transcription correspond à une commande
   static detectCommand(
     transcript: string,
     commands: VoiceCommand[]
@@ -237,167 +337,102 @@ export class VoiceAssistantService {
     
     return null;
   }
-}
-
-// React hook for using the voice assistant
-export function useVoiceAssistant() {
-  const [isListening, setIsListening] = useState(false);
-  const [isSpeaking, setIsSpeaking] = useState(false);
-  const [transcript, setTranscript] = useState('');
-  const [confidence, setConfidence] = useState(0);
-  const [error, setError] = useState<string | null>(null);
-  const [isInitialized, setIsInitialized] = useState(false);
-  const [commands, setCommands] = useState<VoiceCommand[]>([]);
   
-  // Initialize voice assistant on component mount
-  useEffect(() => {
-    const initialize = async () => {
-      try {
-        const hasPermission = await VoiceAssistantService.requestPermissions();
-        setIsInitialized(hasPermission);
-        
-        if (!hasPermission) {
-          setError('Audio recording permissions not granted');
-        }
-      } catch (err) {
-        console.error('Error initializing voice assistant:', err);
-        setError('Failed to initialize voice assistant');
-      }
-    };
-    
-    initialize();
-  }, []);
-  
-  // Start listening for voice commands
-  const startListening = useCallback(async () => {
-    if (!isInitialized) {
-      setError('Voice assistant not initialized');
-      return;
-    }
-    
+  // Traduire un texte d'une langue à une autre
+  static async translateText(
+    text: string,
+    sourceLanguage?: string,
+    targetLanguage: string = 'fr-FR'
+  ): Promise<string> {
     try {
-      setIsListening(true);
-      setError(null);
+      // Si la langue source n'est pas spécifiée, utiliser la dernière langue détectée
+      const actualSourceLang = sourceLanguage || 
+                              this.lastDetectedLanguage?.split('-')[0] || 
+                              'en';
       
-      // Start continuous recognition
-      const recognitionLoop = async () => {
-        while (isListening) {
-          try {
-            // Start recording
-            await VoiceAssistantService.startRecording();
-            
-            // Record for a few seconds
-            await new Promise((resolve) => setTimeout(resolve, 5000));
-            
-            // Stop recording and get audio file
-            const audioUri = await VoiceAssistantService.stopRecording();
-            
-            // Convert audio to base64
-            const audioBase64 = await VoiceAssistantService.audioFileToBase64(audioUri);
-            
-            // Recognize speech
-            const result = await VoiceAssistantService.recognizeSpeech(audioBase64);
-            
-            if (result) {
-              setTranscript(result.transcript);
-              setConfidence(result.confidence);
-              
-              // Check if the transcript matches a command
-              if (commands.length > 0) {
-                const matchedCommand = VoiceAssistantService.detectCommand(
-                  result.transcript,
-                  commands
-                );
-                
-                if (matchedCommand) {
-                  matchedCommand.action();
-                }
-              }
-            }
-          } catch (error) {
-            console.error('Error in recognition loop:', error);
-          }
-          
-          // Brief pause between recognition attempts
-          await new Promise((resolve) => setTimeout(resolve, 1000));
-        }
-      };
+      // Préparer la requête
+      const endpoint = ApiConfig.API_ENDPOINTS.TRANSLATION;
+      const params = new URLSearchParams({
+        key: ApiConfig.getApiKey(),
+        q: text,
+        source: actualSourceLang,
+        target: targetLanguage.split('-')[0], // Utiliser seulement le code de langue sans région
+        format: 'text'
+      });
       
-      recognitionLoop();
-    } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : 'An error occurred';
-      setError(errorMessage);
-      setIsListening(false);
-    }
-  }, [isInitialized, isListening, commands]);
-  
-  // Stop listening
-  const stopListening = useCallback(() => {
-    setIsListening(false);
-  }, []);
-  
-  // Speak text
-  const speak = useCallback(
-    async (text: string, options: Speech.SpeechOptions = {}) => {
-      if (!isInitialized) {
-        setError('Voice assistant not initialized');
-        return;
+      // Appeler l'API de traduction
+      const response = await fetch(`${endpoint}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        body: params.toString()
+      });
+      
+      const data = await response.json();
+      
+      if (!data.data || !data.data.translations || data.data.translations.length === 0) {
+        throw new Error('Échec de la traduction');
       }
       
-      try {
-        setIsSpeaking(true);
-        
-        await VoiceAssistantService.speak(text, options);
-        
-        setIsSpeaking(false);
-      } catch (err) {
-        const errorMessage = err instanceof Error ? err.message : 'An error occurred';
-        setError(errorMessage);
-        setIsSpeaking(false);
-      }
-    },
-    [isInitialized]
-  );
-  
-  // Perform a one-time voice recognition
-  const recognizeSpeech = useCallback(async (): Promise<string | null> => {
-    if (!isInitialized) {
-      setError('Voice assistant not initialized');
-      return null;
+      return data.data.translations[0].translatedText;
+    } catch (error) {
+      console.error('Erreur lors de la traduction du texte:', error);
+      throw error;
     }
-    
+  }
+  
+  // Détecter la langue d'un texte
+  static async detectLanguage(text: string): Promise<string> {
     try {
-      setIsListening(true);
+      const endpoint = ApiConfig.API_ENDPOINTS.TRANSLATION;
+      const params = new URLSearchParams({
+        key: ApiConfig.getApiKey(),
+        q: text
+      });
       
-      const result = await VoiceAssistantService.recordAndRecognize();
+      const response = await fetch(`${endpoint}/detect?${params.toString()}`, {
+        method: 'GET',
+        headers: {
+          'Content-Type': 'application/json',
+        }
+      });
       
-      if (result) {
-        setTranscript(result.transcript);
-        setConfidence(result.confidence);
-        return result.transcript;
+      const data = await response.json();
+      
+      if (!data.data || !data.data.detections || data.data.detections.length === 0) {
+        throw new Error('Échec de la détection de langue');
       }
       
-      return null;
-    } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : 'An error occurred';
-      setError(errorMessage);
-      return null;
-    } finally {
-      setIsListening(false);
+      const detectedLanguage = data.data.detections[0][0].language;
+      this.lastDetectedLanguage = detectedLanguage;
+      return detectedLanguage;
+    } catch (error) {
+      console.error('Erreur lors de la détection de la langue:', error);
+      return 'en'; // Par défaut: anglais
     }
-  }, [isInitialized]);
+  }
   
-  return {
-    isInitialized,
-    isListening,
-    isSpeaking,
-    transcript,
-    confidence,
-    error,
-    startListening,
-    stopListening,
-    speak,
-    recognizeSpeech,
-    setCommands,
-  };
+  // Fonction utilitaire: vérifier si l'API est disponible
+  static async checkApiAvailability(): Promise<boolean> {
+    try {
+      if (!ApiConfig.isApiKeyValid()) {
+        return false;
+      }
+      
+      // Faire une requête de test à l'API
+      const testResponse = await fetch(
+        `${ApiConfig.API_ENDPOINTS.TRANSLATION}/detect?key=${ApiConfig.getApiKey()}&q=test`,
+        {
+          method: 'GET',
+          headers: ApiConfig.getAuthHeaders(),
+        }
+      );
+      
+      return testResponse.status === 200;
+    } catch (error) {
+      console.error('Erreur lors de la vérification de l\'API:', error);
+      return false;
+    }
+  }
 }

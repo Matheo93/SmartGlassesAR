@@ -1,7 +1,6 @@
-// services/BluetoothService.ts
+// BluetoothService.ts - Service de communication Bluetooth amélioré
 import { useState, useEffect, useCallback } from 'react';
 import { Platform, PermissionsAndroid } from 'react-native';
-
 
 // UUID constants for services and characteristics
 // These would need to be replaced with the actual UUIDs of your smart glasses
@@ -16,6 +15,11 @@ export interface BluetoothDevice {
   name: string | null;
   rssi: number | null;
   connected: boolean;
+  manufacturerData?: string;
+  serviceUUIDs?: string[] | null;
+  discoverAllServicesAndCharacteristics?: () => Promise<BluetoothDevice>;
+  getMtu?: () => Promise<number>;
+  onDisconnected?: (callback: (error: Error | null, device: BluetoothDevice | null) => void) => void;
 }
 
 export enum HapticFeedbackType {
@@ -29,11 +33,30 @@ export enum HapticFeedbackType {
   SUCCESS = 0x08,
 }
 
+export enum ConnectionState {
+  DISCONNECTED = 'disconnected',
+  SCANNING = 'scanning',
+  CONNECTING = 'connecting',
+  CONNECTED = 'connected',
+  ERROR = 'error'
+}
+
 export interface GlassesConfig {
   displayBrightness: number; // 0-100
   hapticFeedbackEnabled: boolean;
   voiceAssistantEnabled: boolean;
   batteryThreshold: number; // 0-100
+}
+
+export interface DeviceInfo {
+  id: string;
+  name: string | null;
+  rssi: number | null;
+  mtu?: number;
+  manufacturer?: string | null;
+  serviceUUIDs?: string[] | null;
+  isConnected: boolean;
+  batteryLevel?: number;
 }
 
 // Mock BLE Manager implementation for development and testing
@@ -179,13 +202,54 @@ class MockBleManager {
       }, 10000);
     }
   }
+  
+  // Get MTU
+  async getMtu(deviceId: string): Promise<number> {
+    return 512; // Mock MTU value
+  }
+  
+  // Setup disconnection listener
+  onDeviceDisconnected(
+    deviceId: string,
+    listener: (error: Error | null, device: any) => void
+  ) {
+    // Mock implementation - return a function to remove the listener
+    return {
+      remove: () => {}
+    };
+  }
+  
+  // Enable Bluetooth (Android only)
+  async enable(): Promise<void> {
+    // Mock implementation - do nothing
+  }
 }
 
-// Bluetooth Service for Smart Glasses
+/**
+ * Service amélioré de gestion Bluetooth pour la communication avec les lunettes
+ * et l'envoi de retour haptique
+ */
 export class BluetoothService {
   private static instance: BluetoothService;
   private bleManager: any;
-  private connectedDevice: BluetoothDevice | null = null;
+  private device: BluetoothDevice | null = null;
+  private connectionState: ConnectionState = ConnectionState.DISCONNECTED;
+  private connectionStateListeners: ((state: ConnectionState) => void)[] = [];
+  private deviceDiscoveryListeners: ((devices: BluetoothDevice[]) => void)[] = [];
+  private discoveredDevices: Map<string, BluetoothDevice> = new Map();
+  private connectSubscription: any = null;
+  private reconnectAttempts = 0;
+  private scanTimeout: any = null;
+  private batteryCheckInterval: any = null;
+  
+  // Configuration
+  private config = {
+    serviceLookupName: 'SmartGlasses',
+    scanTimeout: 10000,
+    reconnectAttempts: 3,
+    autoConnect: true,
+    debug: false
+  };
   
   private constructor() {
     try {
@@ -199,6 +263,15 @@ export class BluetoothService {
       // } else {
       //   throw new Error('Bluetooth not supported on web');
       // }
+      
+      // Listen for state changes
+      if (this.bleManager.onStateChange) {
+        this.bleManager.onStateChange((state: string) => {
+          if (state === 'PoweredOn' && this.config.autoConnect) {
+            this.scanAndConnect();
+          }
+        }, true);
+      }
     } catch (error) {
       console.error('Error initializing BLE manager:', error);
     }
@@ -210,6 +283,57 @@ export class BluetoothService {
       BluetoothService.instance = new BluetoothService();
     }
     return BluetoothService.instance;
+  }
+  
+  // Update configuration
+  public updateConfig(newConfig: Partial<typeof this.config>): void {
+    this.config = {
+      ...this.config,
+      ...newConfig
+    };
+    
+    if (this.config.debug) {
+      console.log('Bluetooth config updated:', this.config);
+    }
+  }
+  
+  // Initialize Bluetooth service
+  public async initialize(): Promise<boolean> {
+    try {
+      // Check Bluetooth state
+      const state = await this.bleManager.state();
+      
+      if (state === 'PoweredOn') {
+        if (this.config.autoConnect) {
+          this.scanAndConnect();
+        }
+        return true;
+      } else {
+        // On Android, we can try to enable Bluetooth
+        if (Platform.OS === 'android') {
+          try {
+            await this.bleManager.enable();
+            if (this.config.autoConnect) {
+              this.scanAndConnect();
+            }
+            return true;
+          } catch (error) {
+            console.error('Error enabling Bluetooth:', error);
+            this.updateConnectionState(ConnectionState.ERROR);
+            return false;
+          }
+        } else {
+          // On iOS, user must enable Bluetooth manually
+          console.log('Bluetooth is not enabled');
+          this.updateConnectionState(ConnectionState.DISCONNECTED);
+          return false;
+        }
+      }
+    } catch (error) {
+      console.error('Error initializing Bluetooth:', error);
+      this.updateConnectionState(ConnectionState.ERROR);
+      return false;
+    }
   }
   
   // Request required permissions for Bluetooth
@@ -225,13 +349,13 @@ export class BluetoothService {
         let bluetoothConnectGranted = true;
         
         // Check Android version for newer Bluetooth permissions
-        if (Platform.Version >= 31) { // Android 12+
+        if (parseInt(Platform.Version.toString(), 10) >= 31) { // Android 12+
           bluetoothScanGranted = await PermissionsAndroid.request(
-            'android.permission.BLUETOOTH_SCAN'
+            'android.permission.BLUETOOTH_SCAN' as any
           ) === PermissionsAndroid.RESULTS.GRANTED;
           
           bluetoothConnectGranted = await PermissionsAndroid.request(
-            'android.permission.BLUETOOTH_CONNECT'
+            'android.permission.BLUETOOTH_CONNECT' as any
           ) === PermissionsAndroid.RESULTS.GRANTED;
         }
         
@@ -250,7 +374,56 @@ export class BluetoothService {
     return true;
   }
   
-  // Check Bluetooth state (enabled/disabled)
+  // Scan for devices and connect
+  public async scanAndConnect(): Promise<void> {
+    if (this.connectionState === ConnectionState.SCANNING || 
+        this.connectionState === ConnectionState.CONNECTING) {
+      return;
+    }
+    
+    try {
+      this.updateConnectionState(ConnectionState.SCANNING);
+      this.discoveredDevices.clear();
+      
+      // Stop any ongoing scan
+      this.bleManager.stopDeviceScan();
+      
+      // Set a timeout for scanning
+      this.scanTimeout = setTimeout(() => {
+        this.bleManager.stopDeviceScan();
+        if (this.connectionState === ConnectionState.SCANNING) {
+          this.updateConnectionState(ConnectionState.DISCONNECTED);
+        }
+      }, this.config.scanTimeout);
+      
+      // Start scanning for devices
+      this.bleManager.startDeviceScan(null, null, (error: Error | null, device: BluetoothDevice | null) => {
+        if (error) {
+          console.error('Error scanning for devices:', error);
+          this.updateConnectionState(ConnectionState.ERROR);
+          clearTimeout(this.scanTimeout);
+          return;
+        }
+        
+        // Use a more thorough check that TypeScript will be happy with
+        if (device && typeof device.name === 'string' && device.name.includes(this.config.serviceLookupName)) {
+          // Store discovered device
+          this.discoveredDevices.set(device.id, device);
+          
+          // Notify listeners
+          this.notifyDeviceDiscoveryListeners();
+          
+          // Automatically connect to first device found
+          if (this.config.autoConnect && this.connectionState === ConnectionState.SCANNING) {
+            this.connectToDevice(device);
+          }
+        }
+      });
+    } catch (error) {
+      console.error('Error scanning and connecting:', error);
+      this.updateConnectionState(ConnectionState.ERROR);
+    }
+  }
   public async isBluetoothEnabled(): Promise<boolean> {
     try {
       const state = await this.bleManager.state();
@@ -260,94 +433,200 @@ export class BluetoothService {
       return false;
     }
   }
-  
-  // Start scanning for devices
-  public startScan(
-    onDeviceFound: (device: BluetoothDevice) => void,
-    onError: (error: Error) => void
-  ): void {
+  // Connect to a specific device
+  public async connectToDevice(device: BluetoothDevice): Promise<boolean> {
     try {
-      this.bleManager.startDeviceScan(
-        null, // Scan for all services
-        { allowDuplicates: false },
-        (error: Error | null, device: BluetoothDevice | null) => {
-          if (error) {
-            onError(error);
-            return;
-          }
-          
-          if (device && device.name) {
-            onDeviceFound(device);
-          }
+      // Stop scanning
+      this.bleManager.stopDeviceScan();
+      clearTimeout(this.scanTimeout);
+      
+      this.updateConnectionState(ConnectionState.CONNECTING);
+      
+      // Connect to device
+      this.device = await this.bleManager.connectToDevice(device.id);
+      if (this.device && this.device.discoverAllServicesAndCharacteristics) {
+        await this.device.discoverAllServicesAndCharacteristics();
+      }
+      
+      // Setup disconnection handler
+      this.connectSubscription = this.bleManager.onDeviceDisconnected(
+        this.device?.id || '', // Use optional chaining and provide default empty string
+        (error: Error | null, disconnectedDevice: BluetoothDevice | null) => {
+          this.handleDisconnection(error);
         }
       );
+      
+      // Start periodic battery checks
+      this.startBatteryCheck();
+      
+      this.updateConnectionState(ConnectionState.CONNECTED);
+      return true;
     } catch (error) {
-      onError(error as Error);
+      console.error('Error connecting to device:', error);
+      this.updateConnectionState(ConnectionState.ERROR);
+      return false;
     }
   }
   
-  // Stop scanning
-  public stopScan(): void {
-    this.bleManager.stopDeviceScan();
-  }
-  
-  // Connect to device
-  public async connectToDevice(
-    deviceId: string,
-    onConnected: (device: BluetoothDevice) => void,
-    onDisconnected: () => void,
-    onError: (error: Error) => void
-  ): Promise<void> {
+  // Disconnect device
+  public async disconnect(): Promise<void> {
     try {
-      const device = await this.bleManager.connectToDevice(deviceId);
-      await device.discoverAllServicesAndCharacteristics();
+      if (this.device && this.device.connected) {
+        await this.bleManager.cancelConnection(this.device.id);
+      }
       
-      // Setup disconnection listener
-      device.onDisconnected((error: Error | null, disconnectedDevice: BluetoothDevice | null) => {
-        this.connectedDevice = null;
-        onDisconnected();
-        
-        if (error) {
-          onError(error);
-        }
-      });
+      if (this.connectSubscription) {
+        this.connectSubscription.remove();
+        this.connectSubscription = null;
+      }
       
-      this.connectedDevice = device;
-      onConnected(device);
+      this.stopBatteryCheck();
+      this.device = null;
+      this.updateConnectionState(ConnectionState.DISCONNECTED);
     } catch (error) {
-      onError(error as Error);
+      console.error('Error disconnecting:', error);
     }
   }
   
-  // Disconnect from device
-  public async disconnectFromDevice(): Promise<void> {
-    if (this.connectedDevice) {
-      await this.bleManager.cancelConnection(this.connectedDevice.id);
-      this.connectedDevice = null;
-    }
-  }
-  
-  // Get battery level
-  public async getBatteryLevel(): Promise<number> {
-    if (!this.connectedDevice) {
-      throw new Error('No device connected');
+  // Handle disconnection
+  private handleDisconnection(error: Error | null): void {
+    if (this.config.debug) {
+      console.log('Device disconnected:', error ? error.message : 'normal disconnection');
     }
     
+    this.stopBatteryCheck();
+    
+    // Try to reconnect if disconnection wasn't voluntary
+    if (this.connectionState !== ConnectionState.DISCONNECTED && 
+        this.reconnectAttempts < this.config.reconnectAttempts) {
+      this.reconnectAttempts++;
+      
+      if (this.config.debug) {
+        console.log(`Reconnection attempt ${this.reconnectAttempts}/${this.config.reconnectAttempts}`);
+      }
+      
+      setTimeout(() => {
+        if (this.device) {
+          this.connectToDevice(this.device);
+        } else {
+          this.scanAndConnect();
+        }
+      }, 1000);
+    } else {
+      this.updateConnectionState(ConnectionState.DISCONNECTED);
+      this.reconnectAttempts = 0;
+    }
+  }
+  
+  // Start periodic battery checks
+  private startBatteryCheck(): void {
+    this.stopBatteryCheck();
+    
+    this.batteryCheckInterval = setInterval(async () => {
+      await this.checkBatteryLevel();
+    }, 30000); // Check every 30 seconds
+    
+    // Check immediately
+    this.checkBatteryLevel();
+  }
+  
+  // Stop periodic battery checks
+  private stopBatteryCheck(): void {
+    if (this.batteryCheckInterval) {
+      clearInterval(this.batteryCheckInterval);
+      this.batteryCheckInterval = null;
+    }
+  }
+  
+  // Check battery level
+  public async checkBatteryLevel(): Promise<number | null> {
     try {
+      if (!this.device || !this.device.connected) {
+        return null;
+      }
+      
       const characteristic = await this.bleManager.readCharacteristicForService(
         GLASSES_SERVICE_UUID,
         BATTERY_CHARACTERISTIC_UUID
       );
       
-      if (characteristic.value) {
-        const data = Buffer.from(characteristic.value, 'base64');
-        return data[0]; // 0-100 percentage
+      if (characteristic && characteristic.value) {
+        const bytes = Buffer.from(characteristic.value, 'base64');
+        const batteryLevel = bytes[0];
+        
+        if (this.config.debug) {
+          console.log('Battery level:', batteryLevel);
+        }
+        
+        return batteryLevel;
       }
       
-      throw new Error('Invalid battery data');
+      return null;
     } catch (error) {
-      console.error('Error reading battery level:', error);
-      throw error;
+      if (this.config.debug) {
+        console.error('Error reading battery level:', error);
+      }
+      return null;
+    }
+  }
+  
+  // Get connected device info
+  public async getConnectedDeviceInfo(): Promise<DeviceInfo | null> {
+    try {
+      if (!this.device || !this.device.connected) {
+        return null;
+      }
+      
+      let batteryLevel: number | null = null;
+      try {
+        if (this.device && this.device.connected) {
+          const characteristic = await this.bleManager.readCharacteristicForService(
+            GLASSES_SERVICE_UUID,
+            BATTERY_CHARACTERISTIC_UUID
+          );
+          
+          if (characteristic && characteristic.value) {
+            const bytes = Buffer.from(characteristic.value, 'base64');
+            batteryLevel = bytes[0];
+          }
+        }
+      } catch (error) {
+        console.error('Error reading battery level:', error);
+      }
+      
+      let mtu = 512; // Default value
+      
+      try {
+        if (this.device && this.device.getMtu) {
+          mtu = await this.device.getMtu();
+        }
+      } catch {
+        // Keep the default value if there's an error
+      }
+      
+      return {
+        id: this.device.id,
+        name: this.device.name,
+        rssi: this.device.rssi,
+        mtu,
+        manufacturer: this.device.manufacturerData ? this.parseManufacturerData(this.device.manufacturerData) : null,
+        serviceUUIDs: this.device.serviceUUIDs,
+        isConnected: this.device.connected,
+        batteryLevel: batteryLevel || undefined
+      };
+    } catch (error) {
+      console.error('Error getting connected device info:', error);
+      return null;
+    }
+  }
+  
+  // Parse manufacturer data
+  private parseManufacturerData(data: string): string {
+    try {
+      const buffer = Buffer.from(data, 'base64');
+      return buffer.toString('hex');
+    } catch (error) {
+      return 'Unknown';
     }
   }
   
@@ -355,30 +634,59 @@ export class BluetoothService {
   public async sendHapticFeedback(
     type: HapticFeedbackType,
     intensity: number = 100 // 0-100
-  ): Promise<void> {
-    if (!this.connectedDevice) {
-      throw new Error('No device connected');
-    }
-    
+  ): Promise<boolean> {
     try {
+      if (!this.device || !this.device.connected) {
+        return false;
+      }
+      
+      // Limit intensity between 0 and 100
+      intensity = Math.max(0, Math.min(100, intensity));
+      
+      // Create data packet
       const data = Buffer.alloc(2);
       data[0] = type;
-      data[1] = Math.max(0, Math.min(100, intensity));
+      data[1] = intensity;
       
+      // Convert to Base64 for BLE
+      const base64Data = data.toString('base64');
+      
+      // Write to characteristic
       await this.bleManager.writeCharacteristicWithResponseForService(
         GLASSES_SERVICE_UUID,
         HAPTIC_FEEDBACK_CHARACTERISTIC_UUID,
-        data.toString('base64')
+        base64Data
       );
+      
+      return true;
     } catch (error) {
       console.error('Error sending haptic feedback:', error);
-      throw error;
+      return false;
+    }
+  }
+  
+  // Send haptic sequence
+  public async sendHapticSequence(
+    sequence: Array<{ type: HapticFeedbackType, intensity: number, duration: number }>
+  ): Promise<boolean> {
+    try {
+      for (const item of sequence) {
+        const success = await this.sendHapticFeedback(item.type, item.intensity);
+        if (!success) {
+          return false;
+        }
+        await new Promise(resolve => setTimeout(resolve, item.duration));
+      }
+      return true;
+    } catch (error) {
+      console.error('Error sending haptic sequence:', error);
+      return false;
     }
   }
   
   // Send configuration to glasses
   public async sendConfiguration(config: GlassesConfig): Promise<void> {
-    if (!this.connectedDevice) {
+    if (!this.device || !this.device.connected) {
       throw new Error('No device connected');
     }
     
@@ -398,6 +706,74 @@ export class BluetoothService {
       console.error('Error sending configuration:', error);
       throw error;
     }
+  }
+  
+  // Update connection state and notify listeners
+  private updateConnectionState(state: ConnectionState): void {
+    this.connectionState = state;
+    
+    // Notify listeners
+    this.connectionStateListeners.forEach(listener => {
+      listener(state);
+    });
+    
+    if (this.config.debug) {
+      console.log('Bluetooth connection state:', state);
+    }
+  }
+  
+  // Get current connection state
+  public getConnectionState(): ConnectionState {
+    return this.connectionState;
+  }
+  
+  // Add connection state listener
+  public addConnectionStateListener(listener: (state: ConnectionState) => void): () => void {
+    this.connectionStateListeners.push(listener);
+    
+    // Return a function to remove the listener
+    return () => {
+      this.connectionStateListeners = this.connectionStateListeners.filter(l => l !== listener);
+    };
+  }
+  
+  // Add device discovery listener
+  public addDeviceDiscoveryListener(listener: (devices: BluetoothDevice[]) => void): () => void {
+    this.deviceDiscoveryListeners.push(listener);
+    
+    // Return a function to remove the listener
+    return () => {
+      this.deviceDiscoveryListeners = this.deviceDiscoveryListeners.filter(l => l !== listener);
+    };
+  }
+  
+  // Notify device discovery listeners
+  private notifyDeviceDiscoveryListeners(): void {
+    const devices = Array.from(this.discoveredDevices.values());
+    this.deviceDiscoveryListeners.forEach(listener => {
+      listener(devices);
+    });
+  }
+  
+  // Cleanup resources
+  public cleanup(): void {
+    this.bleManager.stopDeviceScan();
+    clearTimeout(this.scanTimeout);
+    this.stopBatteryCheck();
+    
+    if (this.connectSubscription) {
+      this.connectSubscription.remove();
+      this.connectSubscription = null;
+    }
+    
+    if (this.device && this.device.connected) {
+      this.bleManager.cancelConnection(this.device.id);
+    }
+    
+    this.connectionStateListeners = [];
+    this.deviceDiscoveryListeners = [];
+    this.discoveredDevices.clear();
+    this.device = null;
   }
 }
 
@@ -437,6 +813,33 @@ export function useBluetooth() {
     };
     
     initialize();
+    
+    // Monitor connection state
+    const removeListener = bluetoothService.addConnectionStateListener((state) => {
+      setIsScanning(state === ConnectionState.SCANNING);
+      setIsConnecting(state === ConnectionState.CONNECTING);
+      if (state === ConnectionState.CONNECTED) {
+        bluetoothService.getConnectedDeviceInfo().then(info => {
+          if (info) {
+            setConnectedDevice({
+              id: info.id,
+              name: info.name,
+              rssi: info.rssi,
+              connected: true
+            });
+            if (info.batteryLevel) {
+              setBatteryLevel(info.batteryLevel);
+            }
+          }
+        });
+      } else if (state === ConnectionState.DISCONNECTED) {
+        setConnectedDevice(null);
+      }
+    });
+    
+    return () => {
+      removeListener();
+    };
   }, []);
   
   // Start scanning for devices
@@ -446,27 +849,18 @@ export function useBluetooth() {
       setError(null);
       setDevices([]);
       
-      bluetoothService.startScan(
-        (device) => {
-          setDevices((prevDevices) => {
-            // Avoid duplicates
-            if (prevDevices.some((d) => d.id === device.id)) {
-              return prevDevices;
-            }
-            
-            return [...prevDevices, device];
-          });
-        },
-        (err) => {
-          setError(`Scan error: ${err.message}`);
-          setIsScanning(false);
-        }
-      );
+      // Add discovery listener
+      const removeListener = bluetoothService.addDeviceDiscoveryListener((discoveredDevices) => {
+        setDevices(discoveredDevices);
+      });
+      
+      bluetoothService.scanAndConnect();
       
       // Auto-stop scan after 10 seconds
       setTimeout(() => {
         if (isScanning) {
           stopScan();
+          removeListener();
         }
       }, 10000);
     } catch (err) {
@@ -478,7 +872,6 @@ export function useBluetooth() {
   
   // Stop scanning
   const stopScan = useCallback(() => {
-    bluetoothService.stopScan();
     setIsScanning(false);
   }, []);
   
@@ -488,41 +881,40 @@ export function useBluetooth() {
       setIsConnecting(true);
       setError(null);
       
-      await bluetoothService.connectToDevice(
-        deviceId,
-        (device) => {
-          setConnectedDevice(device);
-          setIsConnecting(false);
-          
-          // Get initial battery level
-          bluetoothService.getBatteryLevel()
-            .then((level) => {
-              setBatteryLevel(level);
-            })
-            .catch((err) => {
-              console.error('Error getting battery level:', err);
-            });
-        },
-        () => {
-          setConnectedDevice(null);
-          setError('Device disconnected');
-        },
-        (err) => {
-          setError(`Connection error: ${err.message}`);
-          setIsConnecting(false);
+      const device = devices.find(d => d.id === deviceId);
+      if (!device) {
+        throw new Error('Device not found');
+      }
+      
+      const success = await bluetoothService.connectToDevice(device);
+      
+      if (success) {
+        const info = await bluetoothService.getConnectedDeviceInfo();
+        if (info) {
+          setConnectedDevice({
+            id: info.id,
+            name: info.name,
+            rssi: info.rssi,
+            connected: true
+          });
+          if (info.batteryLevel) {
+            setBatteryLevel(info.batteryLevel);
+          }
         }
-      );
+      }
+      
+      setIsConnecting(false);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Unknown error';
       setError(`Connection error: ${message}`);
       setIsConnecting(false);
     }
-  }, []);
+  }, [devices]);
   
   // Disconnect from device
   const disconnect = useCallback(async () => {
     try {
-      await bluetoothService.disconnectFromDevice();
+      await bluetoothService.disconnect();
       setConnectedDevice(null);
       setBatteryLevel(0);
     } catch (err) {
@@ -530,59 +922,6 @@ export function useBluetooth() {
       setError(`Disconnection error: ${message}`);
     }
   }, []);
-
-  // In a test component, validate the connection flow
-const testBluetoothConnection = async () => {
-    const bluetoothService = BluetoothService.getInstance();
-    
-    try {
-      // Initialize and request permissions
-      const hasPermissions = await bluetoothService.requestPermissions();
-      if (!hasPermissions) {
-        console.error('Bluetooth permissions denied');
-        return;
-      }
-      
-      // Scan for devices
-      let foundDevices: BluetoothDevice[] = [];
-      bluetoothService.startScan(
-        (device) => {
-          console.log('Device found:', device);
-          foundDevices.push(device);
-        },
-        (error) => {
-          console.error('Scan error:', error);
-        }
-      );
-      
-      // Stop scan after 10 seconds
-      setTimeout(() => {
-        bluetoothService.stopScan();
-        console.log('Scan completed. Found devices:', foundDevices);
-        
-        // Try to connect to a test device if found
-        if (foundDevices.length > 0) {
-          bluetoothService.connectToDevice(
-            foundDevices[0].id,
-            (device) => {
-              console.log('Connected to device:', device);
-              
-              // Test haptic feedback
-              bluetoothService.sendHapticFeedback(HapticFeedbackType.SHORT);
-            },
-            () => {
-              console.log('Device disconnected');
-            },
-            (error) => {
-              console.error('Connection error:', error);
-            }
-          );
-        }
-      }, 10000);
-    } catch (error) {
-      console.error('Bluetooth test error:', error);
-    }
-  };
   
   // Send haptic feedback
   const sendHapticFeedback = useCallback(async (
@@ -600,13 +939,15 @@ const testBluetoothConnection = async () => {
   // Get battery level
   const getBatteryLevel = useCallback(async () => {
     try {
-      const level = await bluetoothService.getBatteryLevel();
-      setBatteryLevel(level);
+      const level = await bluetoothService.checkBatteryLevel();
+      if (level !== null) {
+        setBatteryLevel(level);
+      }
       return level;
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Unknown error';
       setError(`Battery level error: ${message}`);
-      return 0;
+      return null;
     }
   }, []);
   
@@ -638,5 +979,45 @@ const testBluetoothConnection = async () => {
     sendConfiguration,
   };
 }
+
+// Test Bluetooth connection
+export const testBluetoothConnection = async () => {
+  const bluetoothService = BluetoothService.getInstance();
+  
+  try {
+    // Initialize and request permissions
+    const hasPermissions = await bluetoothService.requestPermissions();
+    if (!hasPermissions) {
+      console.error('Bluetooth permissions denied');
+      return;
+    }
+    
+    // Add discovery listener to log found devices
+    const removeListener = bluetoothService.addDeviceDiscoveryListener((devices) => {
+      console.log('Devices found:', devices);
+    });
+    
+    // Start scanning
+    bluetoothService.scanAndConnect();
+    
+    // Stop scan after 10 seconds
+    setTimeout(() => {
+      removeListener();
+      
+      // Check if we connected to any device
+      const state = bluetoothService.getConnectionState();
+      if (state === ConnectionState.CONNECTED) {
+        console.log('Connected to device');
+        
+        // Test haptic feedback
+        bluetoothService.sendHapticFeedback(HapticFeedbackType.SUCCESS);
+      } else {
+        console.log('No device connected');
+      }
+    }, 10000);
+  } catch (error) {
+    console.error('Bluetooth test error:', error);
+  }
+};
 
 export default BluetoothService;

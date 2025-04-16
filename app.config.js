@@ -1,10 +1,47 @@
-// app.config.js (à la racine du projet)
+import { config } from 'dotenv';
+
+// Charger les variables d'environnement depuis .env
+config();
+
 export default {
-    name: "Smart Glasses",
+  expo: {
+    name: "SmartGlasses",
     slug: "smart-glasses",
     version: "1.0.0",
-    // Autres propriétés existantes de votre app.json
+    orientation: "portrait",
+    icon: "./assets/images/icon.png",
+    userInterfaceStyle: "light",
+    splash: {
+      image: "./assets/images/splash-icon.png",
+      resizeMode: "contain",
+      backgroundColor: "#ffffff"
+    },
+    assetBundlePatterns: [
+      "**/*"
+    ],
+    ios: {
+      supportsTablet: true,
+      bundleIdentifier: "com.yourcompany.smartglasses"
+    },
+    android: {
+      adaptiveIcon: {
+        foregroundImage: "./assets/images/adaptive-icon.png",
+        backgroundColor: "#ffffff"
+      },
+      package: "com.yourcompany.smartglasses"
+    },
+    web: {
+      favicon: "./assets/images/favicon.png"
+    },
     extra: {
-      googleApiKey: process.env.GOOGLE_API_KEY || "default_key_for_development"
-    }
-  };
+      // Passer la clé API à l'application
+      apiKey: process.env.GOOGLE_API_KEY,
+      eas: {
+        projectId: "your-eas-project-id"
+      }
+    },
+    plugins: [
+      // Ajoutez les plugins nécessaires ici
+    ]
+  }
+};

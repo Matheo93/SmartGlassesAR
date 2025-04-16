@@ -4,10 +4,10 @@ Mode                 LastWriteTime         Length Name
 ----                 -------------         ------ ----
 -a---          15/03/2025    14:07             54 .env
 -a---          13/04/2025    01:50            448 .gitignore
--a---          17/03/2025    12:24            303 app.config.js
--a---          13/04/2025    00:40           7466 info.txt
--a---          13/04/2025    01:17         516281 package-lock.json
--a---          13/04/2025    01:17           1673 package.json
+-a---          13/04/2025    19:59           1126 app.config.js
+-a---          13/04/2025    02:30           7526 info.txt
+-a---          13/04/2025    19:57         562804 package-lock.json
+-a---          13/04/2025    19:57           1777 package.json
 -a---          17/03/2025    12:23            216 tsconfig.json
 
     Directory: C:\Users\mathb\Desktop\SmartGlasses\.expo
@@ -34,7 +34,7 @@ Mode                 LastWriteTime         Length Name
 
 Mode                 LastWriteTime         Length Name
 ----                 -------------         ------ ----
--a---          17/03/2025    12:19           1762 _layout.tsx
+-a---          13/04/2025    20:55           1762 _layout.tsx
 -a---          26/10/1985    10:15           1389 +html.tsx
 -a---          26/10/1985    10:15            836 +not-found.tsx
 -a---          14/03/2025    18:59            551 debug.tsx
@@ -128,18 +128,19 @@ Mode                 LastWriteTime         Length Name
 
 Mode                 LastWriteTime         Length Name
 ----                 -------------         ------ ----
--a---          17/03/2025    12:24           1031 ApiConfig.ts
+-a---          13/04/2025    20:54           4122 ApiConfig.ts
 -a---          17/03/2025    11:58           1330 AuthService.ts
--a---          17/03/2025    13:11          19216 BluetoothService.ts
--a---          17/03/2025    13:40           9069 GuidanceService.ts
+-a---          13/04/2025    20:48          31609 BluetoothService.ts
+-a---          13/04/2025    20:35           9752 GuidanceService.ts
 -a---          17/03/2025    11:36           2174 HardwareProtocol.ts
--a---          17/03/2025    13:42          17902 NavigationService.ts
--a---          17/03/2025    11:58          10093 ObstacleDetectionService.ts
+-a---          13/04/2025    20:05          38674 NavigationService.ts
+-a---          13/04/2025    20:37          29192 ObstacleDetectionService.ts
 -a---          17/03/2025    11:36           3270 PowerManagementService.ts
+-a---          13/04/2025    20:02          25020 SignLanguageRecognitionService.ts
 -a---          17/03/2025    13:05           6060 TelemetryService.ts
 -a---          17/03/2025    11:40          11152 TestPlanService.ts
--a---          17/03/2025    12:03           6716 TranslationService.ts
--a---          15/03/2025    14:07          11100 VoiceAssistantService.ts
+-a---          13/04/2025    20:20           6720 TranslationService.ts
+-a---          13/04/2025    20:21          14232 VoiceAssistantService.ts
 
     Directory: C:\Users\mathb\Desktop\SmartGlasses\types
 

@@ -1,8 +1,9 @@
-// services/NavigationService.ts
-import { useState, useEffect, useCallback } from 'react';
+// NavigationService.ts - Service de navigation accessible
 import { Alert, Platform } from 'react-native';
-import ApiConfig from './ApiConfig';
 import * as Location from 'expo-location';
+import * as Speech from 'expo-speech';
+import ApiConfig from './ApiConfig';
+import { BluetoothService, HapticFeedbackType } from './BluetoothService';
 
 // Interfaces
 export interface Coordinate {
@@ -17,36 +18,67 @@ export interface Place {
   coordinate: Coordinate;
   distance?: number;
   types?: string[];
+  wheelchair_accessible?: boolean;
 }
 
 export interface NavigationStep {
   instruction: string;
-  distance: number; // in meters
-  duration: number; // in seconds
-  maneuver: 'straight' | 'turn-left' | 'turn-right' | 'uturn' | 'arrive' | 'depart';
+  distance: number; // en mètres
+  duration: number; // en secondes
+  maneuver: 'straight' | 'turn-left' | 'turn-right' | 'uturn' | 'arrive' | 'depart' | 'ramp' | 'elevator';
   coordinate: Coordinate;
+  has_stairs?: boolean;
+  has_curb?: boolean;
+  wheelchair_accessible?: boolean;
 }
 
 export interface RouteDetails {
   origin: Coordinate;
   destination: Coordinate;
-  distance: number; // total distance in meters
-  duration: number; // total duration in seconds
+  distance: number; // distance totale en mètres
+  duration: number; // durée totale en secondes
   steps: NavigationStep[];
-  polyline?: string; // encoded polyline for the route
+  wheelchair_accessible: boolean;
+  polyline?: string; // polyline encodée pour la route
+  alternatives?: RouteDetails[]; // routes alternatives
 }
 
-// Valid transportation modes
+// Modes de transport valides
 export type TransportMode = 'walking' | 'driving' | 'bicycling' | 'transit';
 
 /**
- * Navigation service using Google Maps APIs
+ * Service de navigation amélioré avec fonctionnalités d'accessibilité
  */
 export class NavigationService {
   private static instance: NavigationService | null = null;
   private currentRoute: RouteDetails | null = null;
+  private locationWatcher: Location.LocationSubscription | null = null;
+  private headingWatcher: Location.LocationSubscription | null = null;
+  private currentHeading: number | null = null;
+  private isNavigating: boolean = false;
+  private bluetoothService: BluetoothService;
+  private nextHapticFeedbackTime: number = 0;
   
-  // Create singleton instance
+  // Configuration
+  private config = {
+    wheelchairMode: false,
+    useVoiceGuidance: true,
+    useHapticFeedback: true,
+    hapticFeedbackInterval: 1000, // millisecondes
+    announceTurnsDistance: 50, // mètres
+    announceObstaclesDistance: 30, // mètres
+    distanceUnit: 'metric', // 'metric' ou 'imperial'
+    voiceLanguage: 'fr-FR',
+    voiceRate: 0.9,
+    detourAlertThreshold: 20, // mètres
+    safetyAlerts: true
+  };
+  
+  constructor() {
+    this.bluetoothService = BluetoothService.getInstance();
+  }
+  
+  // Créer une instance singleton
   public static getInstance(): NavigationService {
     if (!this.instance) {
       this.instance = new NavigationService();
@@ -54,21 +86,40 @@ export class NavigationService {
     return this.instance;
   }
   
+  // Mettre à jour la configuration
+  public updateConfig(newConfig: Partial<typeof this.config>): void {
+    this.config = {
+      ...this.config,
+      ...newConfig
+    };
+    
+    console.log('Config de navigation mise à jour:', this.config);
+  }
+  
   /**
-   * Request location permissions
+   * Demander les permissions de localisation
    */
   public static async requestLocationPermissions(): Promise<boolean> {
     try {
       const { status } = await Location.requestForegroundPermissionsAsync();
-      return status === 'granted';
+      
+      if (status === 'granted') {
+        // Demander également les permissions en arrière-plan si disponibles
+        if (Platform.OS === 'ios' || parseInt(Platform.Version.toString(), 10) >= 29) {
+          const { status: bgStatus } = await Location.requestBackgroundPermissionsAsync();
+          return bgStatus === 'granted';
+        }
+        return true;
+      }
+      return false;
     } catch (error) {
-      console.error('Error requesting location permissions:', error);
+      console.error('Erreur lors de la demande des permissions de localisation:', error);
       return false;
     }
   }
 
   /**
-   * Get the current location
+   * Obtenir la position actuelle avec une haute précision
    */
   public static async getCurrentLocation(): Promise<Coordinate | null> {
     try {
@@ -76,14 +127,15 @@ export class NavigationService {
       
       if (status !== 'granted') {
         Alert.alert(
-          'Permission Denied',
-          'Please grant location permissions to use navigation features'
+          'Permission refusée',
+          'La permission de localisation est nécessaire pour la navigation'
         );
         return null;
       }
       
+      // Obtenir la position actuelle avec une haute précision
       const location = await Location.getCurrentPositionAsync({
-        accuracy: Location.Accuracy.Highest,
+        accuracy: Location.Accuracy.BestForNavigation,
       });
       
       return {
@@ -91,22 +143,88 @@ export class NavigationService {
         longitude: location.coords.longitude,
       };
     } catch (error) {
-      console.error('Error getting current location:', error);
+      console.error('Erreur lors de l\'obtention de la position actuelle:', error);
       return null;
     }
   }
 
   /**
-   * Search for places near a location
+   * Commencer à surveiller la position avec une haute précision
+   */
+  public async startLocationTracking(
+    onLocationUpdate: (location: Coordinate) => void,
+    onHeadingUpdate?: (heading: number) => void
+  ): Promise<boolean> {
+    try {
+      const { status } = await Location.requestForegroundPermissionsAsync();
+      
+      if (status !== 'granted') {
+        Alert.alert(
+          'Permission refusée',
+          'La permission de localisation est nécessaire pour la navigation'
+        );
+        return false;
+      }
+      
+      // Commencer à surveiller la position avec une haute précision
+      this.locationWatcher = await Location.watchPositionAsync(
+        {
+          accuracy: Location.Accuracy.BestForNavigation,
+          distanceInterval: 2, // Mettre à jour tous les 2 mètres
+          timeInterval: 1000 // Ou mettre à jour toutes les secondes
+        },
+        (location) => {
+          const newPosition = {
+            latitude: location.coords.latitude,
+            longitude: location.coords.longitude
+          };
+          
+          onLocationUpdate(newPosition);
+        }
+      );
+      
+      // Commencer à surveiller le cap (si demandé)
+      if (onHeadingUpdate) {
+        this.headingWatcher = await Location.watchHeadingAsync((headingData) => {
+          this.currentHeading = headingData.trueHeading;
+          onHeadingUpdate(headingData.trueHeading);
+        });
+      }
+      
+      return true;
+    } catch (error) {
+      console.error('Erreur lors du démarrage du suivi de localisation:', error);
+      return false;
+    }
+  }
+  
+  /**
+   * Arrêter de surveiller la position
+   */
+  public stopLocationTracking(): void {
+    if (this.locationWatcher) {
+      this.locationWatcher.remove();
+      this.locationWatcher = null;
+    }
+    
+    if (this.headingWatcher) {
+      this.headingWatcher.remove();
+      this.headingWatcher = null;
+    }
+  }
+
+  /**
+   * Rechercher des lieux accessibles près d'une position
    */
   public static async searchPlaces(
     query: string,
     location: Coordinate,
-    radius: number = 1500, // Default 1.5km radius
-    type?: string // Optional place type (restaurant, hospital, etc.)
+    radius: number = 1500, // Rayon de 1,5 km par défaut
+    wheelchair_accessible: boolean = false,
+    type?: string // Type de lieu optionnel (restaurant, hospital, etc.)
   ): Promise<Place[]> {
     try {
-      // Build URL parameters
+      // Construire les paramètres d'URL
       const params = new URLSearchParams({
         key: ApiConfig.getApiKey(),
         location: `${location.latitude},${location.longitude}`,
@@ -118,7 +236,13 @@ export class NavigationService {
         params.append('type', type);
       }
       
-      // Call Places API
+      if (wheelchair_accessible) {
+        // L'API Places ne prend pas directement en charge le filtre d'accessibilité pour fauteuil roulant
+        // Mais nous pouvons essayer de filtrer pour les lieux qui mentionnent l'accessibilité
+        params.append('keyword', `${query} accessible`);
+      }
+      
+      // Appeler l'API Places
       const response = await fetch(
         `${ApiConfig.API_ENDPOINTS.PLACES_NEARBY}?${params.toString()}`
       );
@@ -126,29 +250,57 @@ export class NavigationService {
       const data = await response.json();
       
       if (data.status !== 'OK' || !data.results) {
-        console.warn('Places API returned status:', data.status);
+        console.warn('L\'API Places a renvoyé le statut:', data.status);
         return [];
       }
       
-      // Transform results to our format
-      return data.results.map((place: any): Place => ({
-        id: place.place_id,
-        name: place.name,
-        address: place.vicinity,
-        coordinate: {
-          latitude: place.geometry.location.lat,
-          longitude: place.geometry.location.lng,
-        },
-        types: place.types,
-      }));
+      // Transformer les résultats à notre format et filtrer pour l'accessibilité si nécessaire
+      return data.results.map((place: any): Place => {
+        // Traiter l'accessibilité en fauteuil roulant en fonction des données disponibles
+        // Note: L'API Places de Google ne fournit pas directement d'informations sur l'accessibilité en fauteuil roulant
+        // C'est une approximation basée sur les données disponibles
+        let is_accessible = false;
+        
+        if (place.plus_code && place.plus_code.compound_code) {
+          // Rechercher des indices d'accessibilité dans la description
+          is_accessible = place.plus_code.compound_code.toLowerCase().includes('accessible') ||
+                         place.name.toLowerCase().includes('accessible');
+        }
+        
+        // Calculer la distance si nous avons la position actuelle
+        let distance: number | undefined = undefined;
+        
+        if (location) {
+          distance = this.calculateDistance(
+            location,
+            {
+              latitude: place.geometry.location.lat,
+              longitude: place.geometry.location.lng
+            }
+          );
+        }
+        
+        return {
+          id: place.place_id,
+          name: place.name,
+          address: place.vicinity,
+          coordinate: {
+            latitude: place.geometry.location.lat,
+            longitude: place.geometry.location.lng,
+          },
+          types: place.types,
+          wheelchair_accessible: is_accessible,
+          distance
+        };
+      });
     } catch (error) {
-      console.error('Error searching places:', error);
+      console.error('Erreur lors de la recherche de lieux:', error);
       return [];
     }
   }
 
   /**
-   * Geocode an address to coordinates
+   * Géocoder une adresse en coordonnées
    */
   public static async geocodeAddress(address: string): Promise<Coordinate | null> {
     try {
@@ -164,7 +316,7 @@ export class NavigationService {
       const data = await response.json();
       
       if (data.status !== 'OK' || !data.results || data.results.length === 0) {
-        console.warn('Geocoding API returned status:', data.status);
+        console.warn('L\'API de géocodage a renvoyé le statut:', data.status);
         return null;
       }
       
@@ -175,13 +327,13 @@ export class NavigationService {
         longitude: location.lng,
       };
     } catch (error) {
-      console.error('Error geocoding address:', error);
+      console.error('Erreur lors du géocodage de l\'adresse:', error);
       return null;
     }
   }
 
   /**
-   * Get route between two points
+   * Obtenir un itinéraire accessible entre deux points
    */
   public static async getRoute(
     origin: Coordinate,
@@ -190,20 +342,26 @@ export class NavigationService {
     wheelchair: boolean = false
   ): Promise<RouteDetails | null> {
     try {
-      // Build URL parameters
+      // Construire les paramètres d'URL
       const params = new URLSearchParams({
         key: ApiConfig.getApiKey(),
         origin: `${origin.latitude},${origin.longitude}`,
         destination: `${destination.latitude},${destination.longitude}`,
         mode: mode,
+        alternatives: 'true', // Demander des itinéraires alternatifs
       });
       
-      // Add wheelchair accessibility parameter if needed
+      // Ajouter des paramètres d'accessibilité
       if (wheelchair) {
-        params.append('alternatives', 'true'); // Request alternative routes for wheelchair access
+        // L'API Directions de Google ne prend pas directement en charge les paramètres pour fauteuil roulant
+        // mais nous pouvons utiliser quelques solutions de contournement
+        if (mode === 'walking') {
+          // Éviter les escaliers, les pentes raides
+          params.append('avoid', 'indoor'); // Éviter les itinéraires intérieurs car ils ont souvent des escaliers
+        }
       }
       
-      // Call Directions API
+      // Appeler l'API Directions
       const response = await fetch(
         `${ApiConfig.API_ENDPOINTS.MAPS_DIRECTIONS}?${params.toString()}`
       );
@@ -211,70 +369,143 @@ export class NavigationService {
       const data = await response.json();
       
       if (data.status !== 'OK' || !data.routes || data.routes.length === 0) {
-        console.warn('Directions API returned status:', data.status);
+        console.warn('L\'API Directions a renvoyé le statut:', data.status);
         return null;
       }
       
-      const route = data.routes[0];
-      const leg = route.legs[0];
+      // Traiter les itinéraires pour trouver le plus accessible
+      const processedRoutes = data.routes.map((route: any) => 
+        this.processRouteForAccessibility(route, origin, destination, wheelchair)
+      );
       
-      // Transform steps into our format
-      const steps: NavigationStep[] = leg.steps.map((step: any) => {
-        // Determine maneuver type
-        let maneuver: NavigationStep['maneuver'] = 'straight';
-        
-        if (step.maneuver) {
-          if (step.maneuver.includes('left')) {
-            maneuver = 'turn-left';
-          } else if (step.maneuver.includes('right')) {
-            maneuver = 'turn-right';
-          } else if (step.maneuver.includes('uturn')) {
-            maneuver = 'uturn';
-          }
-        }
-        
-        return {
-          instruction: step.html_instructions.replace(/<[^>]*>/g, ''), // Remove HTML tags
-          distance: step.distance.value,
-          duration: step.duration.value,
-          maneuver,
-          coordinate: {
-            latitude: step.end_location.lat,
-            longitude: step.end_location.lng,
-          },
-        };
-      });
-      
-      // Add departure and arrival steps
-      if (steps.length > 0) {
-        steps[0].maneuver = 'depart';
-        steps[steps.length - 1].maneuver = 'arrive';
+      // Si mode fauteuil roulant, prioriser les itinéraires accessibles
+      if (wheelchair) {
+        // Trier les itinéraires par accessibilité
+        processedRoutes.sort((a: RouteDetails, b: RouteDetails) => {
+          if (a.wheelchair_accessible && !b.wheelchair_accessible) return -1;
+          if (!a.wheelchair_accessible && b.wheelchair_accessible) return 1;
+          return a.duration - b.duration; // Puis par durée
+        });
+      } else {
+        // Trier les itinéraires par durée
+        processedRoutes.sort((a: RouteDetails, b: RouteDetails) => 
+          a.duration - b.duration
+        );
       }
       
-      const routeDetails: RouteDetails = {
-        origin,
-        destination: {
-          latitude: leg.end_location.lat,
-          longitude: leg.end_location.lng,
-        },
-        distance: leg.distance.value,
-        duration: leg.duration.value,
-        steps,
-        polyline: route.overview_polyline.points,
-      };
+      // Retourner le meilleur itinéraire
+      const bestRoute = processedRoutes[0];
       
-      return routeDetails;
+      // Stocker les alternatives
+      bestRoute.alternatives = processedRoutes.slice(1);
+      
+      return bestRoute;
     } catch (error) {
-      console.error('Error getting route:', error);
+      console.error('Erreur lors de l\'obtention de l\'itinéraire:', error);
       return null;
     }
   }
+  
+  /**
+   * Traiter un itinéraire de l'API Directions de Google pour l'accessibilité
+   */
+  private static processRouteForAccessibility(
+    route: any, 
+    origin: Coordinate,
+    destination: Coordinate, 
+    wheelchair: boolean
+  ): RouteDetails {
+    const leg = route.legs[0];
+    
+    // Traiter les étapes
+    const steps: NavigationStep[] = leg.steps.map((step: any) => {
+      // Extraire les instructions HTML
+      const rawInstruction = step.html_instructions;
+      // Supprimer les balises HTML
+      const instruction = rawInstruction.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+      
+      // Déterminer le type de manœuvre
+      let maneuver: NavigationStep['maneuver'] = 'straight';
+      
+      if (step.maneuver) {
+        if (step.maneuver.includes('left')) {
+          maneuver = 'turn-left';
+        } else if (step.maneuver.includes('right')) {
+          maneuver = 'turn-right';
+        } else if (step.maneuver.includes('uturn')) {
+          maneuver = 'uturn';
+        }
+      }
+      
+      // Vérifier les problèmes d'accessibilité dans les instructions
+      const has_stairs = instruction.toLowerCase().includes('stair') ||
+                       instruction.toLowerCase().includes('escalier') ||
+                       instruction.toLowerCase().includes('marche');
+                       
+      const has_curb = instruction.toLowerCase().includes('curb') ||
+                     instruction.toLowerCase().includes('bordure') ||
+                     instruction.toLowerCase().includes('trottoir');
+                     
+      // Vérifier les rampes ou ascenseurs (caractéristiques d'accessibilité)
+      const has_ramp = instruction.toLowerCase().includes('ramp') ||
+                      instruction.toLowerCase().includes('rampe');
+      const has_elevator = instruction.toLowerCase().includes('elevator') || 
+                         instruction.toLowerCase().includes('ascenseur') ||
+                         instruction.toLowerCase().includes('lift');
+      
+      if (has_ramp) {
+        maneuver = 'ramp';
+      } else if (has_elevator) {
+        maneuver = 'elevator';
+      }
+      
+      // Déterminer l'accessibilité en fauteuil roulant pour cette étape
+      const wheelchair_accessible = !has_stairs && 
+                                  (has_ramp || has_elevator || (!has_curb));
+      
+      return {
+        instruction,
+        distance: step.distance.value,
+        duration: step.duration.value,
+        maneuver,
+        coordinate: {
+          latitude: step.end_location.lat,
+          longitude: step.end_location.lng,
+        },
+        has_stairs,
+        has_curb,
+        wheelchair_accessible
+      };
+    });
+    
+    // Ajouter les étapes de départ et d'arrivée
+    if (steps.length > 0) {
+      steps[0].maneuver = 'depart';
+      steps[steps.length - 1].maneuver = 'arrive';
+    }
+    
+    // Déterminer l'accessibilité globale en fauteuil roulant
+    const wheelchair_accessible = steps.every(step => step.wheelchair_accessible !== false);
+    
+    return {
+      origin,
+      destination: {
+        latitude: leg.end_location.lat,
+        longitude: leg.end_location.lng,
+      },
+      distance: leg.distance.value,
+      duration: leg.duration.value,
+      steps,
+      wheelchair_accessible,
+      polyline: route.overview_polyline.points,
+    };
+  }
 
   /**
-   * Calculate distance between two coordinates using Haversine formula
+   * Calculer la distance entre deux coordonnées en utilisant la formule de Haversine
    */
   public static calculateDistance(coord1: Coordinate, coord2: Coordinate): number {
-    const R = 6371e3; // Earth radius in meters
+    const R = 6371e3; // Rayon de la Terre en mètres
     const φ1 = (coord1.latitude * Math.PI) / 180;
     const φ2 = (coord2.latitude * Math.PI) / 180;
     const Δφ = ((coord2.latitude - coord1.latitude) * Math.PI) / 180;
@@ -285,12 +516,12 @@ export class NavigationService {
       Math.cos(φ1) * Math.cos(φ2) * Math.sin(Δλ / 2) * Math.sin(Δλ / 2);
     const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
     
-    return R * c; // Distance in meters
+    return R * c; // Distance en mètres
   }
   
   /**
-   * Calculate bearing (direction) between two coordinates
-   * @returns Bearing in degrees (0-360, 0 = North)
+   * Calculer la direction (cap) entre deux coordonnées
+   * @returns Cap en degrés (0-360, 0 = Nord)
    */
   public static calculateBearing(from: Coordinate, to: Coordinate): number {
     const φ1 = (from.latitude * Math.PI) / 180;
@@ -303,12 +534,36 @@ export class NavigationService {
       Math.sin(φ1) * Math.cos(φ2) * Math.cos(Δλ);
     
     let bearing = Math.atan2(y, x) * (180 / Math.PI);
-    bearing = (bearing + 360) % 360; // Normalize to 0-360
+    bearing = (bearing + 360) % 360; // Normaliser à 0-360
     
     return bearing;
   }
   
-  // Instance methods for route management
+  /**
+   * Formater la distance en fonction des préférences de l'utilisateur
+   */
+  public formatDistance(meters: number): string {
+    if (this.config.distanceUnit === 'imperial') {
+      // Convertir en pieds pour les courtes distances, en miles pour les plus longues
+      if (meters < 800) {
+        const feet = Math.round(meters * 3.28084);
+        return `${feet} pieds`;
+      } else {
+        const miles = (meters / 1609.34).toFixed(1);
+        return `${miles} miles`;
+      }
+    } else {
+      // Métrique: utiliser les mètres pour les courtes distances, les kilomètres pour les plus longues
+      if (meters < 1000) {
+        return `${Math.round(meters)} mètres`;
+      } else {
+        const km = (meters / 1000).toFixed(1);
+        return `${km} kilomètres`;
+      }
+    }
+  }
+  
+  // Méthodes d'instance pour la navigation
   public getCurrentRoute(): RouteDetails | null {
     return this.currentRoute;
   }
@@ -318,276 +573,532 @@ export class NavigationService {
   }
   
   /**
-   * Start navigation to a location
+   * Démarrer la navigation vers une destination
    */
   public async startNavigation(
     destination: Coordinate,
     mode: TransportMode = 'walking',
-    wheelchair: boolean = false
+    wheelchair: boolean = false,
+    onLocationUpdate?: (location: Coordinate) => void,
+    onStepChange?: (step: NavigationStep) => void,
+    onArrival?: () => void
   ): Promise<RouteDetails | null> {
     try {
-      // Get current position
+      // Obtenir la position actuelle
       const currentPosition = await NavigationService.getCurrentLocation();
       if (!currentPosition) {
-        throw new Error('Unable to get current location');
+        throw new Error('Impossible d\'obtenir la position actuelle');
       }
       
-      // Get route
+      // Obtenir l'itinéraire
       const route = await NavigationService.getRoute(
         currentPosition,
         destination,
         mode,
-        wheelchair
+        wheelchair || this.config.wheelchairMode
       );
       
       if (!route) {
-        throw new Error('Failed to calculate route');
+        throw new Error('Échec du calcul de l\'itinéraire');
       }
       
-      // Save current route
-      this.setCurrentRoute(route);
+      // Vérifier si l'itinéraire est accessible en mode fauteuil roulant
+      if ((wheelchair || this.config.wheelchairMode) && !route.wheelchair_accessible) {
+        // Rechercher des alternatives accessibles
+        if (route.alternatives && route.alternatives.some(r => r.wheelchair_accessible)) {
+          // Utiliser la première alternative accessible
+          const accessibleRoute = route.alternatives.find(r => r.wheelchair_accessible);
+          if (accessibleRoute) {
+            this.setCurrentRoute(accessibleRoute);
+            
+            // Informer l'utilisateur de l'itinéraire alternatif
+            if (this.config.useVoiceGuidance) {
+              Speech.speak(
+                'Utilisation d\'un itinéraire alternatif accessible. L\'itinéraire principal peut comporter des escaliers ou d\'autres obstacles.',
+                { rate: this.config.voiceRate, language: this.config.voiceLanguage }
+              );
+            }
+          }
+        } else {
+          // Avertir de l'itinéraire inaccessible
+          if (this.config.useVoiceGuidance) {
+            Speech.speak(
+              'Attention : Cet itinéraire peut ne pas être entièrement accessible en fauteuil roulant. Procédez avec prudence.',
+              { rate: this.config.voiceRate, language: this.config.voiceLanguage }
+            );
+          }
+          this.setCurrentRoute(route);
+        }
+      } else {
+        // Utiliser l'itinéraire principal
+        this.setCurrentRoute(route);
+      }
       
-      return route;
+      // Commencer à suivre la position
+      this.isNavigating = true;
+      let currentStepIndex = 0;
+      
+      await this.startLocationTracking(
+        (location) => {
+          // Passer la mise à jour de position au callback s'il est fourni
+          if (onLocationUpdate) {
+            onLocationUpdate(location);
+          }
+          
+          // Vérifier si l'itinéraire et les étapes sont disponibles
+          if (!this.currentRoute || !this.currentRoute.steps || this.currentRoute.steps.length === 0) {
+            return;
+          }
+          
+          // Vérifier si nous avons atteint l'étape actuelle
+          const currentStep = this.currentRoute.steps[currentStepIndex];
+          const distanceToStep = NavigationService.calculateDistance(location, currentStep.coordinate);
+          
+          // Fournir un retour haptique basé sur la distance au tournant
+          this.provideNavigationFeedback(distanceToStep, currentStep);
+          
+          // Vérifier s'il est temps d'annoncer le prochain tournant ou obstacle
+          if (currentStep.maneuver !== 'straight' && 
+              currentStep.maneuver !== 'depart' && 
+              distanceToStep <= this.config.announceTurnsDistance) {
+            
+            // Annoncer seulement si nous ne l'avons pas fait récemment
+            const now = Date.now();
+            if (now > this.nextHapticFeedbackTime) {
+              this.announceUpcomingTurn(currentStep);
+              this.nextHapticFeedbackTime = now + this.config.hapticFeedbackInterval;
+            }
+          }
+          
+          // Vérifier les obstacles en mode fauteuil roulant
+          if ((wheelchair || this.config.wheelchairMode) && 
+              this.config.safetyAlerts && 
+              currentStep.has_stairs) {
+            
+            const now = Date.now();
+            if (distanceToStep <= this.config.announceObstaclesDistance && 
+                now > this.nextHapticFeedbackTime) {
+              this.announceObstacle(currentStep);
+              this.nextHapticFeedbackTime = now + this.config.hapticFeedbackInterval;
+            }
+          }
+          
+          // Si assez proche de l'étape actuelle, passer à l'étape suivante
+          if (distanceToStep < 10 && currentStepIndex < this.currentRoute.steps.length - 1) {
+            currentStepIndex++;
+            
+            // Notifier le callback du changement d'étape
+            if (onStepChange) {
+              onStepChange(this.currentRoute.steps[currentStepIndex]);
+            }
+            
+            // Annoncer la nouvelle étape
+            this.announceNavigationStep(this.currentRoute.steps[currentStepIndex]);
+          }
+          
+          // Vérifier si nous avons atteint la destination finale
+          if (currentStepIndex === this.currentRoute.steps.length - 1 && distanceToStep < 20) {
+            this.announceArrival();
+            this.isNavigating = false;
+            this.stopLocationTracking();
+            
+            // Notifier le callback de l'arrivée
+            if (onArrival) {
+              onArrival();
+            }
+          }
+          
+          // Vérifier si nous sommes hors itinéraire
+          this.checkIfOffRoute(location, currentStepIndex);
+        },
+        (heading) => {
+          // Nous pourrions utiliser le cap pour des indications plus précises
+          // Par exemple, pour dire à l'utilisateur dans quelle direction se tourner
+        }
+      );
+      
+      // Annoncer la première étape
+      if (this.currentRoute && this.currentRoute.steps.length > 0) {
+        this.announceNavigationStart(this.currentRoute);
+      }
+      
+      return this.currentRoute;
     } catch (error) {
-      console.error('Error starting navigation:', error);
+      console.error('Erreur lors du démarrage de la navigation:', error);
       throw error;
     }
   }
   
   /**
-   * Stop current navigation
+   * Annoncer le début de la navigation
+   */
+  private announceNavigationStart(route: RouteDetails): void {
+    if (!this.config.useVoiceGuidance) return;
+    
+    // Formater la distance totale
+    const formattedDistance = this.formatDistance(route.distance);
+    
+    // Formater le temps total
+    const minutes = Math.round(route.duration / 60);
+    
+    // Construire le message
+    let message = `Démarrage de la navigation. Distance totale: ${formattedDistance}. Temps estimé: ${minutes} minutes.`;
+    
+    // Ajouter des informations d'accessibilité si pertinent
+    if (this.config.wheelchairMode) {
+      if (route.wheelchair_accessible) {
+        message += ' Cet itinéraire est accessible en fauteuil roulant.';
+      } else {
+        message += ' Attention: Cet itinéraire peut ne pas être entièrement accessible en fauteuil roulant.';
+      }
+    }
+    
+    // Prononcer le message
+    Speech.speak(message, {
+      rate: this.config.voiceRate,
+      language: this.config.voiceLanguage
+    });
+    
+    // Annoncer également la première étape
+    if (route.steps.length > 0) {
+      setTimeout(() => {
+        this.announceNavigationStep(route.steps[0]);
+      }, 5000); // Attendre 5 secondes avant d'annoncer la première étape
+    }
+  }
+  
+  /**
+   * Annoncer une étape de navigation
+   */
+  private announceNavigationStep(step: NavigationStep): void {
+    if (!this.config.useVoiceGuidance) return;
+    
+    // Formater la distance
+    const formattedDistance = this.formatDistance(step.distance);
+    
+    // Construire l'instruction
+    let instruction = step.instruction;
+    
+    // Ajouter la distance si elle n'est pas déjà dans l'instruction
+    if (!instruction.toLowerCase().includes('mètre') && 
+        !instruction.toLowerCase().includes('km') &&
+        !instruction.toLowerCase().includes('mile') &&
+        !instruction.toLowerCase().includes('pied')) {
+      instruction = `${instruction} sur ${formattedDistance}`;
+    }
+    
+    // Prononcer l'instruction
+    Speech.speak(instruction, {
+      rate: this.config.voiceRate,
+      language: this.config.voiceLanguage
+    });
+    
+    // Retour haptique
+    if (this.config.useHapticFeedback) {
+      this.provideDirectionalHapticFeedback(step.maneuver);
+    }
+  }
+  
+  /**
+   * Annoncer un virage à venir
+   */
+  private announceUpcomingTurn(step: NavigationStep): void {
+    if (!this.config.useVoiceGuidance) return;
+    
+    // Formater la distance
+    const formattedDistance = this.formatDistance(step.distance);
+    
+    // Construire l'annonce
+    let announcement = '';
+    
+    switch (step.maneuver) {
+      case 'turn-left':
+        announcement = `Dans ${formattedDistance}, tournez à gauche`;
+        break;
+      case 'turn-right':
+        announcement = `Dans ${formattedDistance}, tournez à droite`;
+        break;
+      case 'uturn':
+        announcement = `Dans ${formattedDistance}, faites demi-tour`;
+        break;
+      case 'ramp':
+        announcement = `Dans ${formattedDistance}, prenez la rampe`;
+        break;
+      case 'elevator':
+        announcement = `Dans ${formattedDistance}, prenez l'ascenseur`;
+        break;
+      case 'arrive':
+        announcement = `Votre destination est à ${formattedDistance}`;
+        break;
+      default:
+        // Pas d'annonce pour les manœuvres tout droit ou autres
+        return;
+    }
+    
+    // Prononcer l'annonce
+    Speech.speak(announcement, {
+      rate: this.config.voiceRate,
+      language: this.config.voiceLanguage
+    });
+    
+    // Retour haptique
+    if (this.config.useHapticFeedback) {
+      this.provideDirectionalHapticFeedback(step.maneuver);
+    }
+  }
+  
+  /**
+   * Annoncer un obstacle
+   */
+  private announceObstacle(step: NavigationStep): void {
+    if (!this.config.useVoiceGuidance || !this.config.safetyAlerts) return;
+    
+    // Construire l'annonce
+    let announcement = '';
+    
+    if (step.has_stairs) {
+      announcement = 'Attention: Escaliers devant. ';
+      
+      if (step.wheelchair_accessible) {
+        announcement += 'Il devrait y avoir une rampe ou un ascenseur à proximité.';
+      } else {
+        announcement += 'Cette zone peut ne pas être accessible en fauteuil roulant.';
+      }
+    } else if (step.has_curb) {
+      announcement = 'Attention: Bordure de trottoir devant. ';
+      
+      if (step.wheelchair_accessible) {
+        announcement += 'Il devrait y avoir un abaissement de trottoir à proximité.';
+      } else {
+        announcement += 'Cette zone peut ne pas être accessible en fauteuil roulant.';
+      }
+    }
+    
+    if (announcement) {
+      // Prononcer l'annonce
+      Speech.speak(announcement, {
+        rate: this.config.voiceRate,
+        language: this.config.voiceLanguage
+      });
+      
+      // Retour haptique
+      if (this.config.useHapticFeedback) {
+        this.bluetoothService.sendHapticFeedback(HapticFeedbackType.WARNING, 100);
+      }
+    }
+  }
+  
+  /**
+   * Annoncer l'arrivée à destination
+   */
+  private announceArrival(): void {
+    if (!this.config.useVoiceGuidance) return;
+    
+    // Prononcer l'annonce
+    Speech.speak('Vous êtes arrivé à votre destination.', {
+      rate: this.config.voiceRate,
+      language: this.config.voiceLanguage
+    });
+    
+    // Retour haptique
+    if (this.config.useHapticFeedback) {
+      this.bluetoothService.sendHapticFeedback(HapticFeedbackType.SUCCESS, 100);
+    }
+  }
+  
+  /**
+   * Fournir un retour haptique directionnel
+   */
+  private provideDirectionalHapticFeedback(
+    maneuver: NavigationStep['maneuver']
+  ): void {
+    if (!this.config.useHapticFeedback) return;
+    
+    let feedbackType: HapticFeedbackType;
+    
+    switch (maneuver) {
+      case 'turn-left':
+        feedbackType = HapticFeedbackType.LEFT_DIRECTION;
+        break;
+      case 'turn-right':
+        feedbackType = HapticFeedbackType.RIGHT_DIRECTION;
+        break;
+      case 'straight':
+        feedbackType = HapticFeedbackType.STRAIGHT_DIRECTION;
+        break;
+      case 'arrive':
+        feedbackType = HapticFeedbackType.SUCCESS;
+        break;
+      case 'uturn':
+        // Pour un demi-tour, nous ferons un double retour à gauche
+        this.bluetoothService.sendHapticFeedback(HapticFeedbackType.LEFT_DIRECTION, 80);
+        setTimeout(() => {
+          this.bluetoothService.sendHapticFeedback(HapticFeedbackType.LEFT_DIRECTION, 80);
+        }, 500);
+        return;
+      case 'ramp':
+      case 'elevator':
+        // Pour les rampes et ascenseurs, nous ferons un motif spécial
+        feedbackType = HapticFeedbackType.WARNING;
+        break;
+      default:
+        feedbackType = HapticFeedbackType.MEDIUM;
+    }
+    
+    this.bluetoothService.sendHapticFeedback(feedbackType, 80);
+  }
+  
+  /**
+   * Fournir un retour de navigation basé sur la distance au virage
+   */
+  private provideNavigationFeedback(distance: number, step: NavigationStep): void {
+    if (!this.config.useHapticFeedback) return;
+    
+    // Fournir un retour uniquement pour les virages
+    if (step.maneuver !== 'turn-left' && 
+        step.maneuver !== 'turn-right' && 
+        step.maneuver !== 'uturn') {
+      return;
+    }
+    
+    // Fournir un retour uniquement à certains seuils de distance
+    if (distance <= 50 && distance > 30) {
+      // Approche du virage - retour léger
+      const now = Date.now();
+      if (now > this.nextHapticFeedbackTime) {
+        this.bluetoothService.sendHapticFeedback(HapticFeedbackType.SHORT, 40);
+        this.nextHapticFeedbackTime = now + this.config.hapticFeedbackInterval;
+      }
+    } else if (distance <= 30 && distance > 10) {
+      // Se rapproche - retour moyen
+      const now = Date.now();
+      if (now > this.nextHapticFeedbackTime) {
+        this.bluetoothService.sendHapticFeedback(HapticFeedbackType.MEDIUM, 60);
+        this.nextHapticFeedbackTime = now + this.config.hapticFeedbackInterval;
+      }
+    } else if (distance <= 10) {
+      // Très proche - retour directionnel fort
+      const now = Date.now();
+      if (now > this.nextHapticFeedbackTime) {
+        this.provideDirectionalHapticFeedback(step.maneuver);
+        this.nextHapticFeedbackTime = now + this.config.hapticFeedbackInterval;
+      }
+    }
+  }
+  
+  /**
+   * Vérifier si l'utilisateur est hors de l'itinéraire prévu
+   */
+  private checkIfOffRoute(location: Coordinate, currentStepIndex: number): void {
+    if (!this.currentRoute || !this.isNavigating) return;
+    
+    // Vérifier la distance à l'étape actuelle
+    // C'est une version simplifiée - dans une application réelle, nous vérifierions la distance à la polyline
+    
+    const currentStep = this.currentRoute.steps[currentStepIndex];
+    const nextStep = currentStepIndex < this.currentRoute.steps.length - 1 ? 
+                    this.currentRoute.steps[currentStepIndex + 1] : null;
+    
+    // Calculer la distance à l'extrémité de l'étape actuelle
+    const distanceToCurrentStep = NavigationService.calculateDistance(location, currentStep.coordinate);
+    
+    // Calculer la distance à l'extrémité de l'étape suivante (si disponible)
+    const distanceToNextStep = nextStep ? 
+                              NavigationService.calculateDistance(location, nextStep.coordinate) : 
+                              Infinity;
+    
+    // Si nous sommes trop loin des deux points, nous sommes peut-être hors itinéraire
+    if (distanceToCurrentStep > this.config.detourAlertThreshold && 
+        distanceToNextStep > this.config.detourAlertThreshold) {
+      
+      // Éviter les alertes répétées
+      const now = Date.now();
+      if (now > this.nextHapticFeedbackTime) {
+        // Alerter l'utilisateur
+        if (this.config.useVoiceGuidance) {
+          Speech.speak('Vous semblez être hors itinéraire. Recalcul en cours...', {
+            rate: this.config.voiceRate,
+            language: this.config.voiceLanguage
+          });
+        }
+        
+        if (this.config.useHapticFeedback) {
+          this.bluetoothService.sendHapticFeedback(HapticFeedbackType.WARNING, 100);
+        }
+        
+        this.nextHapticFeedbackTime = now + 10000; // Ne pas alerter à nouveau pendant 10 secondes
+        
+        // Recalculer l'itinéraire
+        this.recalculateRoute(location);
+      }
+    }
+  }
+  
+  /**
+   * Recalculer l'itinéraire à partir de la position actuelle
+   */
+  private async recalculateRoute(currentLocation: Coordinate): Promise<void> {
+    if (!this.currentRoute || !this.isNavigating) return;
+    
+    try {
+      // Obtenir un nouvel itinéraire depuis la position actuelle jusqu'à la destination
+      const newRoute = await NavigationService.getRoute(
+        currentLocation,
+        this.currentRoute.destination,
+        'walking',
+        this.config.wheelchairMode
+      );
+      
+      if (newRoute) {
+        // Mettre à jour l'itinéraire actuel
+        this.setCurrentRoute(newRoute);
+        
+        // Annoncer le nouvel itinéraire
+        if (this.config.useVoiceGuidance) {
+          Speech.speak('Itinéraire recalculé. Continuez sur le nouvel itinéraire.', {
+            rate: this.config.voiceRate,
+            language: this.config.voiceLanguage
+          });
+        }
+        
+        // Retour haptique
+        if (this.config.useHapticFeedback) {
+          this.bluetoothService.sendHapticFeedback(HapticFeedbackType.SUCCESS, 80);
+        }
+      }
+    } catch (error) {
+      console.error('Erreur lors du recalcul de l\'itinéraire:', error);
+      
+      // Informer l'utilisateur de l'échec
+      if (this.config.useVoiceGuidance) {
+        Speech.speak('Impossible de recalculer l\'itinéraire. Essayez de revenir au chemin d\'origine.', {
+          rate: this.config.voiceRate,
+          language: this.config.voiceLanguage
+        });
+      }
+    }
+  }
+  
+  /**
+   * Arrêter la navigation en cours
    */
   public stopNavigation(): void {
+    this.isNavigating = false;
     this.setCurrentRoute(null);
+    this.stopLocationTracking();
+    
+    // Informer l'utilisateur
+    if (this.config.useVoiceGuidance) {
+      Speech.speak('Navigation arrêtée.', {
+        rate: this.config.voiceRate,
+        language: this.config.voiceLanguage
+      });
+    }
+    
+    // Retour haptique
+    if (this.config.useHapticFeedback) {
+      this.bluetoothService.sendHapticFeedback(HapticFeedbackType.MEDIUM, 60);
+    }
   }
 }
-
-/**
- * React hook for using the navigation service
- */
-export function useNavigation() {
-  const [currentPosition, setCurrentPosition] = useState<Coordinate | null>(null);
-  const [destination, setDestination] = useState<Coordinate | null>(null);
-  const [currentRoute, setCurrentRoute] = useState<RouteDetails | null>(null);
-  const [currentStepIndex, setCurrentStepIndex] = useState(0);
-  const [isNavigating, setIsNavigating] = useState(false);
-  const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  
-  // Create navigation service instance
-  const navigationService = NavigationService.getInstance();
-  
-  // Get current position
-  const getCurrentPosition = useCallback(async (): Promise<Coordinate | null> => {
-    try {
-      setIsLoading(true);
-      setError(null);
-      
-      const position = await NavigationService.getCurrentLocation();
-      
-      if (position) {
-        setCurrentPosition(position);
-      } else {
-        setError('Unable to get current location');
-      }
-      
-      return position;
-    } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : 'An error occurred';
-      setError(errorMessage);
-      return null;
-    } finally {
-      setIsLoading(false);
-    }
-  }, []);
-  
-  // Initialize location tracking when component mounts
-  useEffect(() => {
-    let locationSubscription: any = null;
-    
-    const setupLocationTracking = async () => {
-      try {
-        // Request permissions
-        const hasPermission = await NavigationService.requestLocationPermissions();
-        
-        if (!hasPermission) {
-          setError('Location permission denied');
-          return;
-        }
-        
-        // Get initial position
-        await getCurrentPosition();
-        
-        // Start watching position
-        locationSubscription = await Location.watchPositionAsync(
-          {
-            accuracy: Location.Accuracy.Highest,
-            distanceInterval: 5, // Update every 5 meters
-          },
-          (location) => {
-            const newPosition = {
-              latitude: location.coords.latitude,
-              longitude: location.coords.longitude,
-            };
-            
-            setCurrentPosition(newPosition);
-            
-            // If navigating, check if we've reached the current step
-            if (isNavigating && currentRoute && currentStepIndex < currentRoute.steps.length) {
-              const currentStep = currentRoute.steps[currentStepIndex];
-              const distanceToStep = NavigationService.calculateDistance(
-                newPosition,
-                currentStep.coordinate
-              );
-              
-              // If within 15 meters of current step, proceed to next step
-              if (distanceToStep < 15 && currentStepIndex < currentRoute.steps.length - 1) {
-                setCurrentStepIndex(currentStepIndex + 1);
-              }
-              
-              // If we've reached the final destination (within 20 meters)
-              if (
-                currentStepIndex === currentRoute.steps.length - 1 &&
-                distanceToStep < 20
-              ) {
-                // Navigation completed
-                setIsNavigating(false);
-                Alert.alert('Arrivé', 'Vous êtes arrivé à destination');
-              }
-            }
-          }
-        );
-      } catch (err) {
-        console.error('Error setting up location tracking:', err);
-        setError('Failed to set up location tracking');
-      }
-    };
-    
-    setupLocationTracking();
-    
-    // Cleanup
-    return () => {
-      if (locationSubscription) {
-        locationSubscription.remove();
-      }
-    };
-  }, [currentStepIndex, currentRoute, isNavigating, getCurrentPosition]);
-  
-  // Start navigation to a destination
-  const startNavigation = useCallback(
-    async (
-      destinationCoord: Coordinate,
-      mode: TransportMode = 'walking',
-      wheelchair: boolean = false
-    ) => {
-      try {
-        if (!currentPosition) {
-          const position = await getCurrentPosition();
-          if (!position) return null;
-        }
-        
-        setIsLoading(true);
-        setError(null);
-        
-        // Use navigation service to start navigation
-        const route = await navigationService.startNavigation(
-          destinationCoord,
-          mode,
-          wheelchair
-        );
-        
-        if (!route) {
-          setError('Failed to calculate route');
-          return null;
-        }
-        
-        setDestination(destinationCoord);
-        setCurrentRoute(route);
-        setCurrentStepIndex(0);
-        setIsNavigating(true);
-        
-        return route;
-      } catch (err) {
-        const errorMessage = err instanceof Error ? err.message : 'An error occurred';
-        setError(errorMessage);
-        return null;
-      } finally {
-        setIsLoading(false);
-      }
-    },
-    [currentPosition, getCurrentPosition, navigationService]
-  );
-  
-  // Stop navigation
-  const stopNavigation = useCallback(() => {
-    navigationService.stopNavigation();
-    setIsNavigating(false);
-    setCurrentRoute(null);
-    setCurrentStepIndex(0);
-  }, [navigationService]);
-  
-  // Search for places
-  const searchPlaces = useCallback(
-    async (query: string, location?: Coordinate, radius?: number) => {
-      try {
-        setIsLoading(true);
-        
-        const searchLocation = location || currentPosition;
-        if (!searchLocation) {
-          const position = await getCurrentPosition();
-          if (!position) {
-            setError('No location available for search');
-            return [];
-          }
-        }
-        
-        const places = await NavigationService.searchPlaces(
-          query,
-          searchLocation || currentPosition!,
-          radius
-        );
-        
-        return places;
-      } catch (err) {
-        const errorMessage = err instanceof Error ? err.message : 'An error occurred';
-        setError(errorMessage);
-        return [];
-      } finally {
-        setIsLoading(false);
-      }
-    },
-    [currentPosition, getCurrentPosition]
-  );
-  
-  // Get the current navigation step
-  const getCurrentStep = useCallback(() => {
-    if (!currentRoute || !isNavigating) return null;
-    return currentRoute.steps[currentStepIndex];
-  }, [currentRoute, isNavigating, currentStepIndex]);
-  
-  // Calculate distance to current step
-  const getDistanceToCurrentStep = useCallback(() => {
-    if (!currentPosition || !currentRoute || !isNavigating) return Infinity;
-    
-    const currentStep = currentRoute.steps[currentStepIndex];
-    return NavigationService.calculateDistance(currentPosition, currentStep.coordinate);
-  }, [currentPosition, currentRoute, isNavigating, currentStepIndex]);
-  
-  return {
-    currentPosition,
-    destination,
-    currentRoute,
-    currentStepIndex,
-    isNavigating,
-    isLoading,
-    error,
-    getCurrentPosition,
-    startNavigation,
-    stopNavigation,
-    searchPlaces,
-    getCurrentStep,
-    getDistanceToCurrentStep,
-  };
-}
-
 export default NavigationService;

@@ -47,7 +47,7 @@ export class TranslationService {
 
       // Call Cloud Vision API
       const response = await fetch(
-        `${ApiConfig.API_ENDPOINTS.VISION}?key=${ApiConfig.getApiKey()}`,
+        `${ApiConfig.API_ENDPOINTS.VISION_API}?key=${ApiConfig.getApiKey()}`,
         {
           method: 'POST',
           headers: {
