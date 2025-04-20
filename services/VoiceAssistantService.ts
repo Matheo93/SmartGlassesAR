@@ -4,6 +4,7 @@ import * as FileSystem from 'expo-file-system';
 import * as Speech from 'expo-speech';
 import { Platform } from 'react-native';
 import ApiConfig from './ApiConfig';
+import { BluetoothService } from './BluetoothService';
 
 // Types pour les résultats de reconnaissance vocale
 export type SpeechRecognitionResult = {
@@ -23,6 +24,18 @@ export type VoiceCommand = {
 // Options d'environnement audio
 export type AudioEnvironment = 'quiet' | 'noisy' | 'outdoor' | 'indoor';
 
+// Interface personnalisée pour les configurations audio
+interface AudioConfiguration {
+  noiseReduction: number; // Changé de optional à required
+  speechEnhancement: number; // Changé de optional à required
+  environmentType: string; // Changé de optional à required
+  displayBrightness: number; // Changé de optional à required
+  hapticFeedbackEnabled: boolean; // Changé de optional à required
+  voiceAssistantEnabled: boolean; // Changé de optional à required
+  batteryThreshold: number; // Changé de optional à required
+  [key: string]: any;
+}
+
 /**
  * Service de reconnaissance vocale et traduction
  * Implémente la reconnaissance vocale via Cloud Speech-to-Text
@@ -34,12 +47,17 @@ export class VoiceAssistantService {
   private static noiseReductionLevel: number = 50; // 0-100
   private static speechEnhancementLevel: number = 70; // 0-100
   private static lastDetectedLanguage: string | null = null;
+  private static bluetoothService: BluetoothService | null = null;
   
   // Initialiser le traitement audio
   static async initializeAudioProcessing(): Promise<boolean> {
     try {
       if (typeof AudioContext !== 'undefined') {
         this.audioContext = new AudioContext();
+        
+        // Initialiser le service Bluetooth pour les ajustements audio
+        this.bluetoothService = BluetoothService.getInstance();
+        
         return true;
       }
       return false;
@@ -63,42 +81,66 @@ export class VoiceAssistantService {
   // Configurer l'audio pour l'environnement optimal
   static async configureAudioForEnvironment(environment: AudioEnvironment): Promise<void> {
     try {
+      // Configuration de base
       let audioMode: any = {
         allowsRecordingIOS: true,
         playsInSilentModeIOS: true,
-        staysActiveInBackground: false
+        staysActiveInBackground: true,
+        // Using numeric values instead of constants
+        interruptionModeIOS: 1, // DO_NOT_MIX = 1
+        interruptionModeAndroid: 1 // DO_NOT_MIX = 1
       };
       
-      // Ajuster la réduction de bruit et l'amélioration de la parole en fonction de l'environnement
+      // Optimisations spécifiques à l'environnement
       switch (environment) {
         case 'noisy':
           this.noiseReductionLevel = 90;
-          this.speechEnhancementLevel = 85;
-          // Pour iOS, nous pouvons définir le mode d'entrée sur chat vocal pour une meilleure annulation du bruit
-          if (Platform.OS === 'ios') {
-            audioMode = {
-              ...audioMode,
-              interruptionModeIOS: 1,
-              playsInSilentModeIOS: true
-            };
-          }
+          this.speechEnhancementLevel = 90;
+          // Using numeric values for constants
+          audioMode.interruptionModeIOS = 2; // DUCK_OTHERS = 2
+          audioMode.interruptionModeAndroid = 2; // DUCK_OTHERS = 2
           break;
         case 'outdoor':
           this.noiseReductionLevel = 80;
-          this.speechEnhancementLevel = 70;
+          this.speechEnhancementLevel = 75;
+          // Ajuster les paramètres pour la réduction du bruit du vent
           break;
         case 'indoor':
           this.noiseReductionLevel = 60;
-          this.speechEnhancementLevel = 75;
+          this.speechEnhancementLevel = 80;
+          // Optimiser pour la réduction d'écho
           break;
         case 'quiet':
-        default:
-          this.noiseReductionLevel = 40;
+          this.noiseReductionLevel = 30;
           this.speechEnhancementLevel = 60;
+          // Réduction de bruit plus faible pour préserver la qualité audio
           break;
       }
       
       await Audio.setAudioModeAsync(audioMode);
+      
+      // Appliquer les paramètres de réduction de bruit et d'amélioration de la parole au matériel
+      if (this.bluetoothService) {
+        // Vérifier la connexion de l'appareil
+        const deviceInfo = await this.bluetoothService.getConnectedDeviceInfo();
+        
+        if (deviceInfo) {
+          // Créer une configuration compatible avec le service Bluetooth
+          // Tous les champs sont maintenant obligatoires et bien définis
+          const config: AudioConfiguration = {
+            noiseReduction: this.noiseReductionLevel,
+            speechEnhancement: this.speechEnhancementLevel,
+            environmentType: environment,
+            displayBrightness: 70,
+            hapticFeedbackEnabled: true,
+            voiceAssistantEnabled: true,
+            batteryThreshold: 20
+          };
+          
+          // Envoyer la configuration
+          await this.bluetoothService.sendConfiguration(config);
+        }
+      }
     } catch (error) {
       console.error('Erreur lors de la configuration audio:', error);
     }
@@ -122,7 +164,32 @@ export class VoiceAssistantService {
       });
       
       // Commencer l'enregistrement avec des paramètres optimisés pour la parole
-      const { recording } = await Audio.Recording.createAsync(Audio.RecordingOptionsPresets.HIGH_QUALITY);
+      const recordingOptions = {
+        ...Audio.RecordingOptionsPresets.HIGH_QUALITY,
+        android: {
+          ...Audio.RecordingOptionsPresets.HIGH_QUALITY.android,
+          extension: '.wav',
+          outputFormat: Audio.AndroidOutputFormat.DEFAULT,
+          audioEncoder: Audio.AndroidAudioEncoder.DEFAULT,
+          sampleRate: 48000,
+          numberOfChannels: 1,
+          bitRate: 128000,
+        },
+        ios: {
+          ...Audio.RecordingOptionsPresets.HIGH_QUALITY.ios,
+          extension: '.wav',
+          outputFormat: Audio.IOSOutputFormat.LINEARPCM,
+          audioQuality: Audio.IOSAudioQuality.MAX,
+          sampleRate: 48000,
+          numberOfChannels: 1,
+          bitRate: 128000,
+          linearPCMBitDepth: 16,
+          linearPCMIsBigEndian: false,
+          linearPCMIsFloat: false,
+        },
+      };
+      
+      const { recording } = await Audio.Recording.createAsync(recordingOptions);
       this.recording = recording;
     } catch (error) {
       console.error('Erreur lors du démarrage de l\'enregistrement:', error);
@@ -198,61 +265,66 @@ export class VoiceAssistantService {
     preferredLanguageCodes?: string[]
   ): Promise<SpeechRecognitionResult | null> {
     try {
-      // Préparer le corps de la requête
-      const body = JSON.stringify({
-        config: {
-          encoding: 'LINEAR16',
-          sampleRateHertz: 44100,
-          languageCode: this.lastDetectedLanguage || 'en-US', // Langue par défaut ou dernière langue détectée
-          alternativeLanguageCodes: preferredLanguageCodes || ['fr-FR', 'es-ES', 'de-DE'], // Langues à détecter
-          model: 'default',
-          enableAutomaticPunctuation: true,
-          enableSpokenPunctuation: true,
-          enableSpokenEmojis: true,
-          speechContexts: [
-            {
-              phrases: ['fauteuil roulant', 'navigation', 'obstacle', 'traduire', 'aide'], // Phrases courantes
-              boost: 10 // Boost pour la reconnaissance de ces phrases
-            }
-          ],
-          profanityFilter: false,
-          enableWordTimeOffsets: false
-        },
-        audio: {
-          content: audioBase64,
-        },
-      });
+      const apiKey = ApiConfig.getApiKey();
       
-      // Appeler l'API Google Cloud Speech-to-Text
+      // Créer une configuration optimisée pour les paramètres spécifiques à l'environnement
+      const config = {
+        encoding: 'LINEAR16',
+        sampleRateHertz: 48000,
+        languageCode: this.lastDetectedLanguage || 'en-US',
+        alternativeLanguageCodes: preferredLanguageCodes || ['fr-FR', 'es-ES', 'de-DE'],
+        model: 'command_and_search',  // Utiliser command_and_search pour les commandes d'accessibilité
+        enableAutomaticPunctuation: true,
+        enableSpokenPunctuation: true,
+        enableSpokenEmojis: true,
+        speechContexts: [
+          {
+            phrases: [
+              'navigate', 'go to', 'find', 'help', 'wheelchair', 'stairs',
+              'obstacle', 'translate', 'sign language', 'read this'
+            ],
+            boost: 15 // Amplifier la reconnaissance des phrases liées à l'accessibilité
+          }
+        ],
+        // Paramètres de bruit améliorés
+        useEnhanced: true,
+        profanityFilter: false,
+        enableWordTimeOffsets: false
+      };
+      
+      // Requête à l'API Speech-to-Text
       const response = await fetch(
-        `${ApiConfig.API_ENDPOINTS.SPEECH_TO_TEXT}?key=${ApiConfig.getApiKey()}`,
+        `${ApiConfig.API_ENDPOINTS.SPEECH_TO_TEXT}?key=${apiKey}`,
         {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
           },
-          body,
+          body: JSON.stringify({
+            config,
+            audio: { content: audioBase64 },
+          }),
         }
       );
       
+      if (!response.ok) {
+        throw new Error(`Erreur API de reconnaissance vocale: ${response.status}`);
+      }
+      
       const data = await response.json();
       
-      if (
-        !data.results ||
-        !data.results[0] ||
-        !data.results[0].alternatives ||
-        !data.results[0].alternatives[0]
-      ) {
+      if (!data.results || data.results.length === 0) {
         return null;
       }
       
       const result = data.results[0].alternatives[0];
       
-      // Obtenir la langue détectée si disponible
+      // Obtenir la langue détectée (important pour les applications multilingues)
       let detectedLanguage: string | undefined;
       if (data.results[0].languageCode) {
-        detectedLanguage = data.results[0].languageCode as string;
-        this.lastDetectedLanguage = detectedLanguage; // Stocker la dernière langue détectée
+        detectedLanguage = data.results[0].languageCode;
+        // Ensure we store only string or null
+        this.lastDetectedLanguage = detectedLanguage || null;
       }
       
       return {

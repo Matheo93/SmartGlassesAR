@@ -30,6 +30,8 @@ export interface NavigationStep {
   has_stairs?: boolean;
   has_curb?: boolean;
   wheelchair_accessible?: boolean;
+  elevation_change?: number;
+  has_steep_slope?: boolean;
 }
 
 export interface RouteDetails {
@@ -333,7 +335,7 @@ export class NavigationService {
   }
 
   /**
-   * Obtenir un itinéraire accessible entre deux points
+   * Obtenir un itinéraire accessible entre deux points avec intégration API réelle
    */
   public static async getRoute(
     origin: Coordinate,
@@ -342,29 +344,47 @@ export class NavigationService {
     wheelchair: boolean = false
   ): Promise<RouteDetails | null> {
     try {
-      // Construire les paramètres d'URL
+      // Clé API pour l'API Google Directions
+      const apiKey = ApiConfig.getApiKey();
+      
+      // Paramètres URL améliorés pour l'accessibilité
       const params = new URLSearchParams({
-        key: ApiConfig.getApiKey(),
+        key: apiKey,
         origin: `${origin.latitude},${origin.longitude}`,
         destination: `${destination.latitude},${destination.longitude}`,
         mode: mode,
         alternatives: 'true', // Demander des itinéraires alternatifs
+        units: 'metric',
+        language: 'fr', // Peut être modifié en fonction des préférences de l'utilisateur
+        departure_time: 'now',
       });
       
       // Ajouter des paramètres d'accessibilité
       if (wheelchair) {
-        // L'API Directions de Google ne prend pas directement en charge les paramètres pour fauteuil roulant
-        // mais nous pouvons utiliser quelques solutions de contournement
+        // Google Directions ne prend pas directement en charge le routage en fauteuil roulant
+        // Nous pouvons utiliser ces paramètres pour l'approximer
+        params.append('avoid', 'indoor'); // Souvent contient des escaliers
+        
         if (mode === 'walking') {
-          // Éviter les escaliers, les pentes raides
-          params.append('avoid', 'indoor'); // Éviter les itinéraires intérieurs car ils ont souvent des escaliers
+          // Obtenir un chemin détaillé pour une meilleure analyse d'accessibilité
+          params.append('waypoints', 'optimize:false'); // Ne pas optimiser les points intermédiaires pour obtenir un chemin exact
+        }
+        
+        if (mode === 'transit') {
+          // Demander le champ wheelchair_boarding pour les stations de transit
+          params.append('transit_routing_preference', 'less_walking');
+          params.append('transit_mode', 'bus|subway|train|tram|rail');
         }
       }
       
-      // Appeler l'API Directions
+      // Faire la requête API
       const response = await fetch(
         `${ApiConfig.API_ENDPOINTS.MAPS_DIRECTIONS}?${params.toString()}`
       );
+      
+      if (!response.ok) {
+        throw new Error(`Erreur API Directions: ${response.status}`);
+      }
       
       const data = await response.json();
       
@@ -373,30 +393,29 @@ export class NavigationService {
         return null;
       }
       
-      // Traiter les itinéraires pour trouver le plus accessible
+      // Traiter les itinéraires avec informations d'accessibilité
       const processedRoutes = data.routes.map((route: any) => 
         this.processRouteForAccessibility(route, origin, destination, wheelchair)
       );
       
-      // Si mode fauteuil roulant, prioriser les itinéraires accessibles
+      // Trier les itinéraires pour l'accessibilité si nécessaire
       if (wheelchair) {
-        // Trier les itinéraires par accessibilité
         processedRoutes.sort((a: RouteDetails, b: RouteDetails) => {
+          // Prioriser les itinéraires accessibles en fauteuil roulant
           if (a.wheelchair_accessible && !b.wheelchair_accessible) return -1;
           if (!a.wheelchair_accessible && b.wheelchair_accessible) return 1;
-          return a.duration - b.duration; // Puis par durée
+          // Puis trier par durée
+          return a.duration - b.duration;
         });
       } else {
-        // Trier les itinéraires par durée
+        // Trier par durée uniquement
         processedRoutes.sort((a: RouteDetails, b: RouteDetails) => 
           a.duration - b.duration
         );
       }
       
-      // Retourner le meilleur itinéraire
+      // Retourner le meilleur itinéraire avec alternatives
       const bestRoute = processedRoutes[0];
-      
-      // Stocker les alternatives
       bestRoute.alternatives = processedRoutes.slice(1);
       
       return bestRoute;
@@ -407,7 +426,7 @@ export class NavigationService {
   }
   
   /**
-   * Traiter un itinéraire de l'API Directions de Google pour l'accessibilité
+   * Traiter l'itinéraire avec des informations d'accessibilité améliorées
    */
   private static processRouteForAccessibility(
     route: any, 
@@ -417,12 +436,10 @@ export class NavigationService {
   ): RouteDetails {
     const leg = route.legs[0];
     
-    // Traiter les étapes
+    // Traiter les étapes avec des informations d'accessibilité
     const steps: NavigationStep[] = leg.steps.map((step: any) => {
-      // Extraire les instructions HTML
-      const rawInstruction = step.html_instructions;
-      // Supprimer les balises HTML
-      const instruction = rawInstruction.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+      // Extraire les instructions (supprimer les balises HTML)
+      const instruction = step.html_instructions.replace(/<[^>]*>/g, ' ').trim();
       
       // Déterminer le type de manœuvre
       let maneuver: NavigationStep['maneuver'] = 'straight';
@@ -437,31 +454,66 @@ export class NavigationService {
         }
       }
       
-      // Vérifier les problèmes d'accessibilité dans les instructions
-      const has_stairs = instruction.toLowerCase().includes('stair') ||
-                       instruction.toLowerCase().includes('escalier') ||
-                       instruction.toLowerCase().includes('marche');
-                       
-      const has_curb = instruction.toLowerCase().includes('curb') ||
-                     instruction.toLowerCase().includes('bordure') ||
-                     instruction.toLowerCase().includes('trottoir');
-                     
-      // Vérifier les rampes ou ascenseurs (caractéristiques d'accessibilité)
-      const has_ramp = instruction.toLowerCase().includes('ramp') ||
-                      instruction.toLowerCase().includes('rampe');
-      const has_elevator = instruction.toLowerCase().includes('elevator') || 
-                         instruction.toLowerCase().includes('ascenseur') ||
-                         instruction.toLowerCase().includes('lift');
+      // Analyse d'accessibilité améliorée
+      // Vérifier le texte pour les problèmes d'accessibilité
+      const instructionLower = instruction.toLowerCase();
       
-      if (has_ramp) {
-        maneuver = 'ramp';
-      } else if (has_elevator) {
-        maneuver = 'elevator';
+      const has_stairs = instructionLower.includes('stair') || 
+                        instructionLower.includes('escalier') ||
+                        instructionLower.includes('marche');
+                      
+      const has_curb = instructionLower.includes('curb') ||
+                      instructionLower.includes('bordure') ||
+                      instructionLower.includes('trottoir');
+                    
+      const has_elevator = instructionLower.includes('elevator') || 
+                          instructionLower.includes('ascenseur') ||
+                          instructionLower.includes('lift');
+                        
+      const has_ramp = instructionLower.includes('ramp') ||
+                      instructionLower.includes('rampe');
+      
+      // Vérifier si l'étape implique un changement d'élévation
+      let elevation_change = 0;
+      if (step.elevation_data) {
+        const elevations = step.elevation_data;
+        if (elevations.length > 1) {
+          const firstElevation = elevations[0].elevation;
+          const lastElevation = elevations[elevations.length - 1].elevation;
+          elevation_change = lastElevation - firstElevation;
+        }
       }
       
-      // Déterminer l'accessibilité en fauteuil roulant pour cette étape
-      const wheelchair_accessible = !has_stairs && 
-                                  (has_ramp || has_elevator || (!has_curb));
+      // Détecter les pentes raides (problématiques pour les fauteuils roulants)
+      const has_steep_slope = Math.abs(elevation_change) > 2; // Plus de 2m de changement
+      
+      // Traitement spécial pour les étapes de transit
+      let transit_wheelchair_accessible = false;
+      if (step.travel_mode === 'TRANSIT' && step.transit_details) {
+        transit_wheelchair_accessible = 
+          step.transit_details.line.wheelchair_accessible === true ||
+          (step.transit_details.stop && 
+           step.transit_details.stop.wheelchair_boarding === true);
+           
+        // Définir la manœuvre appropriée pour le transit
+        maneuver = 'straight'; // Par défaut pour le transit
+      }
+      
+      // Pour les étapes avec des données d'élévation indiquant une rampe ou un ascenseur
+      if (step.elevation_data && elevation_change !== 0) {
+        if (has_elevator) {
+          maneuver = 'elevator';
+        } else if (has_ramp || Math.abs(elevation_change) < 5) {
+          maneuver = 'ramp';
+        }
+      }
+      
+      // Déterminer l'accessibilité en fauteuil roulant
+      const wheelchair_accessible = 
+        !has_stairs && 
+        !has_steep_slope && 
+        (has_ramp || has_elevator || !has_curb) &&
+        (step.travel_mode !== 'TRANSIT' || transit_wheelchair_accessible);
       
       return {
         instruction,
@@ -474,7 +526,9 @@ export class NavigationService {
         },
         has_stairs,
         has_curb,
-        wheelchair_accessible
+        wheelchair_accessible,
+        elevation_change,
+        has_steep_slope
       };
     });
     
@@ -484,7 +538,7 @@ export class NavigationService {
       steps[steps.length - 1].maneuver = 'arrive';
     }
     
-    // Déterminer l'accessibilité globale en fauteuil roulant
+    // Accessibilité globale de l'itinéraire en fauteuil roulant
     const wheelchair_accessible = steps.every(step => step.wheelchair_accessible !== false);
     
     return {
@@ -673,7 +727,7 @@ export class NavigationService {
           // Vérifier les obstacles en mode fauteuil roulant
           if ((wheelchair || this.config.wheelchairMode) && 
               this.config.safetyAlerts && 
-              currentStep.has_stairs) {
+              (currentStep.has_stairs || currentStep.has_steep_slope)) {
             
             const now = Date.now();
             if (distanceToStep <= this.config.announceObstaclesDistance && 
@@ -872,6 +926,14 @@ export class NavigationService {
       } else {
         announcement += 'Cette zone peut ne pas être accessible en fauteuil roulant.';
       }
+    } else if (step.has_steep_slope) {
+      announcement = 'Attention: Pente raide devant. ';
+      
+      if (step.wheelchair_accessible) {
+        announcement += 'Procédez avec prudence.';
+      } else {
+        announcement += 'Cette pente peut être difficile en fauteuil roulant.';
+      }
     }
     
     if (announcement) {
@@ -907,14 +969,16 @@ export class NavigationService {
   }
   
   /**
-   * Fournir un retour haptique directionnel
+   * Fournir un retour haptique directionnel amélioré
    */
   private provideDirectionalHapticFeedback(
     maneuver: NavigationStep['maneuver']
   ): void {
     if (!this.config.useHapticFeedback) return;
     
+    // Sélectionner le type de retour en fonction de la manœuvre
     let feedbackType: HapticFeedbackType;
+    let intensity = 80; // Intensité par défaut
     
     switch (maneuver) {
       case 'turn-left':
@@ -925,27 +989,58 @@ export class NavigationService {
         break;
       case 'straight':
         feedbackType = HapticFeedbackType.STRAIGHT_DIRECTION;
+        intensity = 60; // Moins intense pour les directions tout droit
         break;
       case 'arrive':
         feedbackType = HapticFeedbackType.SUCCESS;
+        intensity = 100; // Intensité maximale pour l'arrivée
+        break;
+      case 'depart':
+        feedbackType = HapticFeedbackType.SHORT;
+        intensity = 70;
         break;
       case 'uturn':
-        // Pour un demi-tour, nous ferons un double retour à gauche
+        // Pour les demi-tours, envoyer un motif double à gauche
         this.bluetoothService.sendHapticFeedback(HapticFeedbackType.LEFT_DIRECTION, 80);
         setTimeout(() => {
           this.bluetoothService.sendHapticFeedback(HapticFeedbackType.LEFT_DIRECTION, 80);
         }, 500);
         return;
       case 'ramp':
+        // Motif spécial pour les rampes
+        this.sendSpecialHapticPattern([
+          { type: HapticFeedbackType.SHORT, intensity: 60, duration: 200 },
+          { type: HapticFeedbackType.MEDIUM, intensity: 70, duration: 300 },
+          { type: HapticFeedbackType.LONG, intensity: 80, duration: 200 }
+        ]);
+        return;
       case 'elevator':
-        // Pour les rampes et ascenseurs, nous ferons un motif spécial
-        feedbackType = HapticFeedbackType.WARNING;
-        break;
+        // Motif spécial pour les ascenseurs
+        this.sendSpecialHapticPattern([
+          { type: HapticFeedbackType.SHORT, intensity: 60, duration: 200 },
+          { type: HapticFeedbackType.SHORT, intensity: 60, duration: 200 },
+          { type: HapticFeedbackType.LONG, intensity: 80, duration: 500 }
+        ]);
+        return;
       default:
         feedbackType = HapticFeedbackType.MEDIUM;
+        intensity = 70;
     }
     
-    this.bluetoothService.sendHapticFeedback(feedbackType, 80);
+    // Envoyer le retour haptique
+    this.bluetoothService.sendHapticFeedback(feedbackType, intensity);
+  }
+  
+  /**
+   * Envoyer un motif haptique spécial pour les manœuvres complexes
+   */
+  private async sendSpecialHapticPattern(
+    pattern: Array<{ type: HapticFeedbackType, intensity: number, duration: number }>
+  ): Promise<void> {
+    for (const item of pattern) {
+      await this.bluetoothService.sendHapticFeedback(item.type, item.intensity);
+      await new Promise(resolve => setTimeout(resolve, item.duration));
+    }
   }
   
   /**
