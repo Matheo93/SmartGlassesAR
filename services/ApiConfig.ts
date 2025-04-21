@@ -12,6 +12,14 @@ class ApiConfig {
   // Storage keys
   private static readonly API_KEY_STORAGE_KEY = 'API_KEY';
   private static readonly USER_ID_STORAGE_KEY = 'USER_ID';
+  private static readonly API_QUOTA_STORAGE_KEY = 'API_QUOTA';
+  
+  // Suivi des quotas API
+  private static apiQuotaTracking = {
+    vision: { count: 0, lastReset: new Date() },
+    translation: { count: 0, lastReset: new Date() },
+    maps: { count: 0, lastReset: new Date() }
+  };
   
   // Points d'accès des APIs
   public static readonly API_ENDPOINTS = {
@@ -52,6 +60,7 @@ class ApiConfig {
     // Charger la clé API depuis le stockage local s'il y en a une
     await this.loadApiKey();
     await this.loadUserId();
+    await this.loadApiQuotas();
     
     // Vérifier la validité de la clé API
     if (!this.isApiKeyValid()) {
@@ -172,6 +181,122 @@ class ApiConfig {
       console.error('Erreur lors du chargement de l\'ID utilisateur:', error);
       return null;
     }
+  }
+
+  /**
+   * Suivre l'utilisation des APIs et vérifier les quotas
+   * Retourne false si le quota est dépassé
+   */
+  public static trackApiCall(apiName: 'vision' | 'translation' | 'maps'): boolean {
+    const now = new Date();
+    const track = this.apiQuotaTracking[apiName];
+    
+    // Réinitialiser quotidiennement
+    if (now.getDate() !== track.lastReset.getDate() || 
+        now.getMonth() !== track.lastReset.getMonth() ||
+        now.getFullYear() !== track.lastReset.getFullYear()) {
+      track.count = 0;
+      track.lastReset = now;
+    }
+    
+    // Vérifier les limites quotidiennes
+    // Ces limites sont à ajuster selon votre compte Google Cloud
+    const limits = { vision: 1000, translation: 5000, maps: 2000 };
+    
+    if (track.count >= limits[apiName]) {
+      console.warn(`Quota API ${apiName} atteint pour aujourd'hui`);
+      return false;
+    }
+    
+    track.count++;
+    
+    // Sauvegarder périodiquement les quotas (pas à chaque appel pour éviter de saturer AsyncStorage)
+    if (track.count % 10 === 0) {
+      this.saveApiQuotas();
+    }
+    
+    return true;
+  }
+  
+  /**
+   * Sauvegarder les quotas API dans le stockage
+   */
+  private static async saveApiQuotas(): Promise<void> {
+    try {
+      await AsyncStorage.setItem(
+        this.API_QUOTA_STORAGE_KEY, 
+        JSON.stringify({
+          quotas: this.apiQuotaTracking,
+          savedAt: new Date().toISOString()
+        })
+      );
+    } catch (error) {
+      console.error('Erreur lors de la sauvegarde des quotas API:', error);
+    }
+  }
+  
+  /**
+   * Charger les quotas API depuis le stockage
+   */
+  private static async loadApiQuotas(): Promise<void> {
+    try {
+      const quotaData = await AsyncStorage.getItem(this.API_QUOTA_STORAGE_KEY);
+      if (quotaData) {
+        const data = JSON.parse(quotaData);
+        
+        // Réinitialiser si les données sont d'un jour précédent
+        const savedAt = new Date(data.savedAt);
+        const now = new Date();
+        
+        if (savedAt.getDate() === now.getDate() && 
+            savedAt.getMonth() === now.getMonth() && 
+            savedAt.getFullYear() === now.getFullYear()) {
+          this.apiQuotaTracking = data.quotas;
+        } else {
+          // Réinitialiser les compteurs mais garder la structure
+          Object.keys(this.apiQuotaTracking).forEach(key => {
+            this.apiQuotaTracking[key as keyof typeof this.apiQuotaTracking].count = 0;
+            this.apiQuotaTracking[key as keyof typeof this.apiQuotaTracking].lastReset = now;
+          });
+        }
+      }
+    } catch (error) {
+      console.error('Erreur lors du chargement des quotas API:', error);
+    }
+  }
+  
+  /**
+   * Réinitialiser les compteurs de quotas API (pour le développement)
+   */
+  public static resetApiQuotas(): void {
+    const now = new Date();
+    Object.keys(this.apiQuotaTracking).forEach(key => {
+      this.apiQuotaTracking[key as keyof typeof this.apiQuotaTracking].count = 0;
+      this.apiQuotaTracking[key as keyof typeof this.apiQuotaTracking].lastReset = now;
+    });
+    this.saveApiQuotas();
+  }
+  
+  /**
+   * Obtenir les statistiques d'utilisation des APIs
+   */
+  public static getApiUsageStats(): { [key: string]: { used: number, limit: number } } {
+    const limits = { vision: 1000, translation: 5000, maps: 2000 };
+    
+    return {
+      vision: { 
+        used: this.apiQuotaTracking.vision.count, 
+        limit: limits.vision 
+      },
+      translation: { 
+        used: this.apiQuotaTracking.translation.count, 
+        limit: limits.translation 
+      },
+      maps: { 
+        used: this.apiQuotaTracking.maps.count, 
+        limit: limits.maps 
+      }
+    };
   }
 
   /**

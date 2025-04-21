@@ -14,6 +14,8 @@ import { ThemedView } from '../ui/ThemedView';
 import { Ionicons } from '@expo/vector-icons';
 import { TranslationService, DetectedText, useTranslation } from '../../services/TranslationService';
 import * as FileSystem from 'expo-file-system';
+import * as ImageManipulator from 'expo-image-manipulator';
+import ApiConfig from '../../services/ApiConfig';
 
 const SCREEN_WIDTH = Dimensions.get('window').width;
 const SCREEN_HEIGHT = Dimensions.get('window').height;
@@ -64,11 +66,22 @@ export const RealTimeTranslation: React.FC<RealTimeTranslationProps> = ({
     };
   }, [isAutoTranslateEnabled, isTranslating, isCameraReady]);
   
-  // Capture et traduction
+  // Capture et traduction optimisée
   const captureAndTranslate = async () => {
     if (!cameraRef.current || !isCameraReady || isTranslating) return;
     
     try {
+      // Vérifier le quota API si nécessaire
+      if (!ApiConfig.trackApiCall('vision')) {
+        console.warn('Vision API quota reached');
+        if (isAutoTranslateEnabled) {
+          // Désactiver auto-translate si quota atteint
+          setIsAutoTranslateEnabled(false);
+          Alert.alert('Limite API atteinte', 'Le mode automatique a été désactivé.');
+        }
+        return;
+      }
+      
       setIsTranslating(true);
       setError(null);
       
@@ -76,26 +89,54 @@ export const RealTimeTranslation: React.FC<RealTimeTranslationProps> = ({
       const photo = await cameraRef.current.takePictureAsync({
         base64: true,
         quality: 0.7,
+        exif: false, // Pas besoin des données EXIF pour gagner en performance
       });
       
       if (!photo?.base64) {
         throw new Error('Image capture failed');
       }
       
-      // Utiliser le service de traduction
-      const results = await detectAndTranslate(photo.base64, targetLanguage);
-      
-      if (results.length > 0) {
-        setDetectedTexts(results);
+      // Vérifier la taille de l'image - Vision API a des limites
+      const base64Size = photo.base64.length * 0.75; // Estimation de la taille en octets
+      if (base64Size > 10485760) { // 10MB max pour Vision API
+        console.log('Image too large, reducing quality');
+        // Réduire la qualité si nécessaire
+        const resizedPhoto = await ImageManipulator.manipulateAsync(
+          photo.uri,
+          [{ resize: { width: 1000 } }], // Réduire à une taille raisonnable
+          { base64: true, compress: 0.6 }
+        );
+        
+        // Utiliser le service de traduction avec l'image redimensionnée
+        const results = await detectAndTranslate(resizedPhoto.base64 || '', targetLanguage);
+        
+        if (results.length > 0) {
+          setDetectedTexts(results);
+        } else {
+          // Si aucun texte n'est détecté, afficher un message silencieux (pas d'alerte)
+          console.log('No text detected in the image');
+        }
       } else {
-        // Si aucun texte n'est détecté, afficher un message silencieux (pas d'alerte)
-        console.log('No text detected in the image');
+        // Utiliser le service de traduction directement
+        const results = await detectAndTranslate(photo.base64, targetLanguage);
+        
+        if (results.length > 0) {
+          setDetectedTexts(results);
+        } else {
+          // Si aucun texte n'est détecté, afficher un message silencieux (pas d'alerte)
+          console.log('No text detected in the image');
+        }
       }
-      
     } catch (err) {
       const message = err instanceof Error ? err.message : 'An error occurred';
       setError(message);
-      Alert.alert('Translation Error', message);
+      
+      // N'afficher l'alerte que pour les erreurs importantes
+      if (message.includes('API') || message.includes('network')) {
+        Alert.alert('Translation Error', message);
+      } else {
+        console.error('Translation error:', err);
+      }
     } finally {
       setIsTranslating(false);
     }
