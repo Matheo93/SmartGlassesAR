@@ -5,9 +5,9 @@ Mode                 LastWriteTime         Length Name
 -a---          15/03/2025    14:07             54 .env
 -a---          13/04/2025    01:50            448 .gitignore
 -a---          13/04/2025    19:59           1126 app.config.js
--a---          13/04/2025    02:30           7526 info.txt
--a---          13/04/2025    19:57         562804 package-lock.json
--a---          13/04/2025    19:57           1777 package.json
+-a---          16/04/2025    05:29           7611 info.txt
+-a---          21/04/2025    20:08         576414 package-lock.json
+-a---          21/04/2025    20:08           1862 package.json
 -a---          17/03/2025    12:23            216 tsconfig.json
 
     Directory: C:\Users\mathb\Desktop\SmartGlasses\.expo
@@ -87,8 +87,8 @@ Mode                 LastWriteTime         Length Name
 -a---          21/03/2025    11:00          23018 EnhancedSignLanguageRecognition.tsx
 -a---          13/04/2025    01:40          33396 FaceRecognitionAssistant.tsx
 -a---          13/04/2025    01:29          43871 HearingAidIntegration.tsx
--a---          15/03/2025    12:56           8740 RealTimeTranslation.tsx
--a---          15/03/2025    12:54          13646 SignLanguageRecognition.tsx
+-a---          21/04/2025    20:05           8657 RealTimeTranslation.tsx
+-a---          21/04/2025    20:13          20905 SignLanguageRecognition.tsx
 -a---          15/03/2025    12:54          16088 VoiceAssistant.tsx
 -a---          13/04/2025    00:32          29552 VoiceTranslator.tsx
 
@@ -96,7 +96,7 @@ Mode                 LastWriteTime         Length Name
 
 Mode                 LastWriteTime         Length Name
 ----                 -------------         ------ ----
--a---          13/04/2025    00:30          19211 ARNavigation.tsx
+-a---          21/04/2025    20:11          24711 ARNavigation.tsx
 -a---          21/03/2025    10:49          16603 EnhancedNavigation.tsx
 
     Directory: C:\Users\mathb\Desktop\SmartGlasses\components\navigation\safety
@@ -128,19 +128,19 @@ Mode                 LastWriteTime         Length Name
 
 Mode                 LastWriteTime         Length Name
 ----                 -------------         ------ ----
--a---          13/04/2025    20:54           4122 ApiConfig.ts
+-a---          19/04/2025    19:43           7077 ApiConfig.ts
 -a---          17/03/2025    11:58           1330 AuthService.ts
 -a---          13/04/2025    20:48          31609 BluetoothService.ts
 -a---          13/04/2025    20:35           9752 GuidanceService.ts
 -a---          17/03/2025    11:36           2174 HardwareProtocol.ts
--a---          13/04/2025    20:05          38674 NavigationService.ts
--a---          13/04/2025    20:37          29192 ObstacleDetectionService.ts
+-a---          16/04/2025    12:22          42742 NavigationService.ts
+-a---          19/04/2025    21:09          33910 ObstacleDetectionService.ts
 -a---          17/03/2025    11:36           3270 PowerManagementService.ts
--a---          13/04/2025    20:02          25020 SignLanguageRecognitionService.ts
+-a---          19/04/2025    20:09          28791 SignLanguageRecognitionService.ts
 -a---          17/03/2025    13:05           6060 TelemetryService.ts
 -a---          17/03/2025    11:40          11152 TestPlanService.ts
 -a---          13/04/2025    20:20           6720 TranslationService.ts
--a---          13/04/2025    20:21          14232 VoiceAssistantService.ts
+-a---          19/04/2025    20:40          17386 VoiceAssistantService.ts
 
     Directory: C:\Users\mathb\Desktop\SmartGlasses\types
 

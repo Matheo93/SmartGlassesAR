@@ -1,4 +1,4 @@
-// components/accessibility/SignLanguageRecognition.tsx
+// components/accessibility/SignLanguageRecognition.tsx - Version améliorée
 import React, { useState, useRef, useEffect } from 'react';
 import { 
   View, 
@@ -6,12 +6,19 @@ import {
   TouchableOpacity, 
   ActivityIndicator,
   ScrollView,
-  Dimensions 
+  Dimensions,
+  Alert 
 } from 'react-native';
 import { CameraView, CameraType } from 'expo-camera';
 import { ThemedText } from '../ui/ThemedText';
 import { ThemedView } from '../ui/ThemedView';
 import { Ionicons, MaterialIcons } from '@expo/vector-icons';
+import * as tf from '@tensorflow/tfjs';
+import '@tensorflow/tfjs-react-native';
+import * as FileSystem from 'expo-file-system';
+import * as ImageManipulator from 'expo-image-manipulator';
+import * as Speech from 'expo-speech';
+import { SignLanguageRecognitionService, RecognizedSign, SignType } from '../../services/SignLanguageRecognitionService';
 
 const SCREEN_WIDTH = Dimensions.get('window').width;
 
@@ -19,11 +26,8 @@ type SignLanguageRecognitionProps = {
   onClose?: () => void;
 };
 
-type RecognizedSign = {
-  sign: string;
-  translation: string;
-  confidence: number;
-  timestamp: Date;
+type RecognizedSignWithTimestamp = RecognizedSign & {
+  id: string;
 };
 
 export const SignLanguageRecognition: React.FC<SignLanguageRecognitionProps> = ({
@@ -32,100 +36,232 @@ export const SignLanguageRecognition: React.FC<SignLanguageRecognitionProps> = (
   const [isCameraReady, setIsCameraReady] = useState(false);
   const [isRecognizing, setIsRecognizing] = useState(false);
   const [isContinuousMode, setIsContinuousMode] = useState(false);
-  const [recognizedSigns, setRecognizedSigns] = useState<RecognizedSign[]>([]);
+  const [recognizedSigns, setRecognizedSigns] = useState<RecognizedSignWithTimestamp[]>([]);
   const [activeCameraType, setActiveCameraType] = useState<CameraType>('front');
   const [showHistory, setShowHistory] = useState(false);
-  const [isLoading, setIsLoading] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
+  const [tfReady, setTfReady] = useState(false);
+  const [activeLanguage, setActiveLanguage] = useState<string>('asl');
+  const [speakResults, setSpeakResults] = useState(true);
   
   const cameraRef = useRef<CameraView | null>(null);
+  const signService = useRef<SignLanguageRecognitionService | null>(null);
+  const processingInterval = useRef<NodeJS.Timeout | null>(null);
   
-  // Mock sign language recognition
-  const recognizeSign = async (): Promise<RecognizedSign | null> => {
-    // Simulate processing delay
-    await new Promise(resolve => setTimeout(resolve, 1500));
-    
-    // Mock recognition results - in a real app, this would come from a machine learning model
-    const signs = [
-      { sign: "Hello", translation: "Bonjour", confidence: 0.92 },
-      { sign: "Thank you", translation: "Merci", confidence: 0.88 },
-      { sign: "Please", translation: "S'il vous plaît", confidence: 0.85 },
-      { sign: "Yes", translation: "Oui", confidence: 0.95 },
-      { sign: "No", translation: "Non", confidence: 0.91 },
-      { sign: "Help", translation: "Aide", confidence: 0.87 }
-    ];
-    
-    // Randomly select a sign for demo purposes
-    const randomSign = signs[Math.floor(Math.random() * signs.length)];
-    
-    return {
-      ...randomSign,
-      timestamp: new Date()
+  // Initialiser TensorFlow.js et le service de reconnaissance
+  useEffect(() => {
+    const setup = async () => {
+      try {
+        // Initialiser TensorFlow.js
+        await tf.ready();
+        setTfReady(true);
+        
+        // Initialiser le service de reconnaissance
+        const service = SignLanguageRecognitionService.getInstance();
+        await service.initialize();
+        
+        // Configurer le service
+        service.updateConfig({
+          activeLanguage: 'asl',
+          speakRecognizedSigns: speakResults
+        });
+        
+        signService.current = service;
+        setIsLoading(false);
+      } catch (error) {
+        console.error('Erreur lors de l\'initialisation:', error);
+        Alert.alert(
+          'Erreur d\'initialisation',
+          'Impossible d\'initialiser le service de reconnaissance. Veuillez réessayer.'
+        );
+        setIsLoading(false);
+      }
     };
+    
+    setup();
+    
+    return () => {
+      if (processingInterval.current) {
+        clearInterval(processingInterval.current);
+      }
+      
+      if (signService.current) {
+        signService.current.stopRecognition();
+      }
+    };
+  }, []);
+  
+  // Mettre à jour la configuration du service quand les préférences changent
+  useEffect(() => {
+    if (signService.current) {
+      signService.current.updateConfig({
+        activeLanguage,
+        speakRecognizedSigns: speakResults
+      });
+    }
+  }, [activeLanguage, speakResults]);
+  
+  // Effet pour le mode continu
+  useEffect(() => {
+    if (isContinuousMode && !isRecognizing) {
+      startContinuousRecognition();
+    } else {
+      stopContinuousRecognition();
+    }
+    
+    return () => {
+      stopContinuousRecognition();
+    };
+  }, [isContinuousMode, isRecognizing]);
+  
+  // Commencer la reconnaissance continue
+  const startContinuousRecognition = () => {
+    if (processingInterval.current) {
+      clearInterval(processingInterval.current);
+    }
+    
+    // Lancer le service de reconnaissance
+    if (signService.current) {
+      signService.current.startRecognition();
+    }
+    
+    // Traiter les images de la caméra à intervalles réguliers
+    processingInterval.current = setInterval(() => {
+      captureAndRecognize();
+    }, 1000); // Reconnaissance toutes les secondes
   };
   
-  // Capture and recognize
+  // Arrêter la reconnaissance continue
+  const stopContinuousRecognition = () => {
+    if (processingInterval.current) {
+      clearInterval(processingInterval.current);
+      processingInterval.current = null;
+    }
+    
+    // Arrêter le service
+    if (signService.current) {
+      signService.current.stopRecognition();
+    }
+  };
+  
+  // Capturer une image et la traiter
   const captureAndRecognize = async () => {
-    if (!cameraRef.current || !isCameraReady || isRecognizing) return;
+    if (!cameraRef.current || !isCameraReady || isRecognizing || !signService.current) return;
     
     try {
       setIsRecognizing(true);
       
-      // Take a photo
+      // Prendre une photo
       const photo = await cameraRef.current.takePictureAsync({
         quality: 0.8,
+        base64: true
       });
       
-      // Recognize sign (in a real app, we would send the photo to a model)
-      const result = await recognizeSign();
-      
-      if (result) {
-        // Add to history
-        setRecognizedSigns(prev => [result, ...prev]);
+      // Redimensionner l'image pour mieux la traiter
+      if (!photo) {
+        throw new Error('La capture de photo a échoué');
       }
       
-    } catch (err) {
-      console.error('Error recognizing sign:', err);
+      const resizedImage = await ImageManipulator.manipulateAsync(
+        photo.uri,
+        [{ resize: { width: 300, height: 300 } }],
+        { format: ImageManipulator.SaveFormat.JPEG, base64: true }
+      );
+      
+      // Reconnaître le signe
+      if (!photo) {
+        throw new Error('La capture de photo a échoué');
+      }
+      const base64Data = resizedImage.base64 || '';
+      const result = await signService.current.processFrame({ base64: base64Data });
+      
+      if (result) {
+        // Ajouter à l'historique avec un ID unique
+        const newSign: RecognizedSignWithTimestamp = {
+          ...result,
+          id: Date.now().toString()
+        };
+        
+        setRecognizedSigns(prev => [newSign, ...prev]);
+        
+        // Annoncer le résultat avec TTS si activé
+        if (speakResults) {
+          Speech.speak(result.value, {
+            language: result.language === 'fr' ? 'fr-FR' : 'en-US',
+            pitch: 1.0,
+            rate: 0.9
+          });
+        }
+      }
+    } catch (error) {
+      console.error('Erreur lors de la reconnaissance:', error);
     } finally {
       setIsRecognizing(false);
     }
   };
   
-  // Continuous recognition mode
-  useEffect(() => {
-    let intervalId: NodeJS.Timeout | null = null;
-    
-    if (isContinuousMode && !isRecognizing) {
-      intervalId = setInterval(captureAndRecognize, 3000);
-    }
-    
-    return () => {
-      if (intervalId) clearInterval(intervalId);
-    };
-  }, [isContinuousMode, isRecognizing, isCameraReady]);
-  
-  // Flip camera
+  // Inverser la caméra (avant/arrière)
   const toggleCamera = () => {
     setActiveCameraType(current => (current === 'front' ? 'back' : 'front'));
   };
   
-  // Clear history
+  // Effacer l'historique
   const clearHistory = () => {
-    setRecognizedSigns([]);
+    Alert.alert(
+      'Effacer l\'historique',
+      'Êtes-vous sûr de vouloir effacer tout l\'historique?',
+      [
+        { text: 'Annuler', style: 'cancel' },
+        { text: 'Effacer', style: 'destructive', onPress: () => setRecognizedSigns([]) }
+      ]
+    );
   };
   
-  // Render hand position guide
+  // Changer la langue active
+  const cycleLanguage = () => {
+    if (!signService.current) return;
+    
+    const supported = signService.current.getSupportedLanguages();
+    const currentIndex = supported.indexOf(activeLanguage);
+    const nextIndex = (currentIndex + 1) % supported.length;
+    const nextLanguage = supported[nextIndex];
+    
+    setActiveLanguage(nextLanguage);
+  };
+  
+  // Obtenir le nom complet de la langue
+  const getLanguageName = (code: string) => {
+    switch (code) {
+      case 'asl': return 'American Sign Language';
+      case 'bsl': return 'British Sign Language';
+      case 'lsf': return 'Langue des Signes Française';
+      default: return code.toUpperCase();
+    }
+  };
+  
+  // Obtenir l'emoji drapeau de la langue
+  const getLanguageFlag = (code: string) => {
+    switch (code) {
+      case 'asl': return '🇺🇸';
+      case 'bsl': return '🇬🇧';
+      case 'lsf': return '🇫🇷';
+      default: return '🌐';
+    }
+  };
+  
+  // Rendu du guide de positionnement des mains
   const renderHandPositionGuide = () => {
     return (
       <View style={styles.handGuideContainer}>
         <View style={styles.handOutline} />
         <ThemedText style={styles.handGuideText}>
-          Position your hand in this area
+          Positionnez votre main dans cette zone
         </ThemedText>
       </View>
     );
   };
   
-  // Render current recognition
+  // Rendu de la reconnaissance actuelle
   const renderCurrentRecognition = () => {
     if (recognizedSigns.length === 0) return null;
     
@@ -133,10 +269,17 @@ export const SignLanguageRecognition: React.FC<SignLanguageRecognitionProps> = (
     
     return (
       <View style={styles.currentRecognitionContainer}>
-        <ThemedText style={styles.signText}>{latestSign.sign}</ThemedText>
-        <ThemedText style={styles.translationText}>
-          "{latestSign.translation}"
-        </ThemedText>
+        <ThemedText style={styles.signText}>{latestSign.value}</ThemedText>
+        <View style={styles.signTypeContainer}>
+          <ThemedText style={styles.signTypeText}>
+            {latestSign.type === SignType.ALPHABET ? 'Alphabet' : 
+             latestSign.type === SignType.WORD ? 'Mot' : 
+             latestSign.type === SignType.PHRASE ? 'Phrase' : 'Dynamique'}
+          </ThemedText>
+          <ThemedText style={styles.languageIndicator}>
+            {getLanguageFlag(latestSign.language)} {getLanguageName(latestSign.language)}
+          </ThemedText>
+        </View>
         <View style={styles.confidenceBar}>
           <View 
             style={[
@@ -146,20 +289,20 @@ export const SignLanguageRecognition: React.FC<SignLanguageRecognitionProps> = (
           />
         </View>
         <ThemedText style={styles.confidenceText}>
-          Confidence: {(latestSign.confidence * 100).toFixed(0)}%
+          Confiance: {(latestSign.confidence * 100).toFixed(0)}%
         </ThemedText>
       </View>
     );
   };
   
-  // Render history panel
+  // Rendu du panneau d'historique
   const renderHistoryPanel = () => {
     if (!showHistory) return null;
     
     return (
       <View style={styles.historyPanel}>
         <View style={styles.historyHeader}>
-          <ThemedText style={styles.historyTitle}>Recognition History</ThemedText>
+          <ThemedText style={styles.historyTitle}>Historique de reconnaissance</ThemedText>
           <TouchableOpacity onPress={clearHistory}>
             <MaterialIcons name="clear-all" size={24} color="white" />
           </TouchableOpacity>
@@ -168,20 +311,27 @@ export const SignLanguageRecognition: React.FC<SignLanguageRecognitionProps> = (
         <ScrollView style={styles.historyList}>
           {recognizedSigns.length === 0 ? (
             <ThemedText style={styles.emptyHistoryText}>
-              No signs recognized yet
+              Aucun signe reconnu pour le moment
             </ThemedText>
           ) : (
-            recognizedSigns.map((sign, index) => (
-              <View key={index} style={styles.historyItem}>
+            recognizedSigns.map((sign) => (
+              <View key={sign.id} style={styles.historyItem}>
                 <View style={styles.historyItemLeft}>
-                  <ThemedText style={styles.historySignText}>{sign.sign}</ThemedText>
-                  <ThemedText style={styles.historyTranslationText}>
-                    {sign.translation}
+                  <ThemedText style={styles.historySignText}>{sign.value}</ThemedText>
+                  <ThemedText style={styles.historySignType}>
+                    {sign.type === SignType.ALPHABET ? 'Alphabet' : 
+                     sign.type === SignType.WORD ? 'Mot' : 
+                     sign.type === SignType.PHRASE ? 'Phrase' : 'Dynamique'}
                   </ThemedText>
                 </View>
-                <ThemedText style={styles.historyTimeText}>
-                  {sign.timestamp.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
-                </ThemedText>
+                <View style={styles.historyItemRight}>
+                  <ThemedText style={styles.historyLanguage}>
+                    {getLanguageFlag(sign.language)}
+                  </ThemedText>
+                  <ThemedText style={styles.historyTimeText}>
+                    {sign.timestamp.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
+                  </ThemedText>
+                </View>
               </View>
             ))
           )}
@@ -189,6 +339,18 @@ export const SignLanguageRecognition: React.FC<SignLanguageRecognitionProps> = (
       </View>
     );
   };
+  
+  // Si TensorFlow n'est pas encore prêt, afficher l'écran de chargement
+  if (isLoading || !tfReady) {
+    return (
+      <ThemedView style={styles.loadingContainer}>
+        <ActivityIndicator size="large" color="#2196F3" />
+        <ThemedText style={styles.loadingText}>
+          Chargement du système de reconnaissance...
+        </ThemedText>
+      </ThemedView>
+    );
+  }
   
   return (
     <ThemedView style={styles.container}>
@@ -198,28 +360,37 @@ export const SignLanguageRecognition: React.FC<SignLanguageRecognitionProps> = (
         facing={activeCameraType}
         onCameraReady={() => setIsCameraReady(true)}
       >
-        {/* Hand positioning guide */}
+        {/* Guide de positionnement des mains */}
         {!showHistory && renderHandPositionGuide()}
         
-        {/* Current recognition result */}
+        {/* Résultat de la reconnaissance actuelle */}
         {!showHistory && renderCurrentRecognition()}
         
-        {/* History panel */}
+        {/* Panneau d'historique */}
         {renderHistoryPanel()}
         
-        {/* Loading indicator */}
+        {/* Indicateur de chargement */}
         {isRecognizing && (
           <View style={styles.loadingContainer}>
             <ActivityIndicator size="large" color="#ffffff" />
             <ThemedText style={styles.loadingText}>
-              Recognizing sign...
+              Reconnaissance en cours...
             </ThemedText>
           </View>
         )}
         
-        {/* Controls */}
+        {/* Indicateur de langue active */}
+        <View style={styles.activeLanguageIndicator}>
+          <TouchableOpacity onPress={cycleLanguage}>
+            <ThemedText style={styles.activeLanguageText}>
+              {getLanguageFlag(activeLanguage)} {getLanguageName(activeLanguage)}
+            </ThemedText>
+          </TouchableOpacity>
+        </View>
+        
+        {/* Contrôles */}
         <View style={styles.controls}>
-          {/* Capture button */}
+          {/* Bouton de capture */}
           {!showHistory && (
             <TouchableOpacity
               style={styles.captureButton}
@@ -230,9 +401,9 @@ export const SignLanguageRecognition: React.FC<SignLanguageRecognitionProps> = (
             </TouchableOpacity>
           )}
           
-          {/* Bottom button bar */}
+          {/* Barre de boutons du bas */}
           <View style={styles.bottomBar}>
-            {/* Toggle continuous mode */}
+            {/* Toggle du mode continu */}
             <TouchableOpacity
               style={[
                 styles.controlButton,
@@ -250,7 +421,7 @@ export const SignLanguageRecognition: React.FC<SignLanguageRecognitionProps> = (
               </ThemedText>
             </TouchableOpacity>
             
-            {/* Toggle history */}
+            {/* Toggle d'historique */}
             <TouchableOpacity
               style={[
                 styles.controlButton,
@@ -260,24 +431,38 @@ export const SignLanguageRecognition: React.FC<SignLanguageRecognitionProps> = (
             >
               <Ionicons name="time" size={24} color="white" />
               <ThemedText style={styles.controlButtonText}>
-                History
+                Historique
               </ThemedText>
             </TouchableOpacity>
             
-            {/* Flip camera */}
+            {/* Toggle de la TTS */}
+            <TouchableOpacity
+              style={[
+                styles.controlButton,
+                speakResults && styles.activeControlButton
+              ]}
+              onPress={() => setSpeakResults(!speakResults)}
+            >
+              <Ionicons name="volume-high" size={24} color="white" />
+              <ThemedText style={styles.controlButtonText}>
+                Audio
+              </ThemedText>
+            </TouchableOpacity>
+            
+            {/* Inverser la caméra */}
             <TouchableOpacity
               style={styles.controlButton}
               onPress={toggleCamera}
             >
               <Ionicons name="camera-reverse" size={24} color="white" />
               <ThemedText style={styles.controlButtonText}>
-                Flip
+                Caméra
               </ThemedText>
             </TouchableOpacity>
           </View>
         </View>
         
-        {/* Close button */}
+        {/* Bouton de fermeture */}
         {onClose && (
           <TouchableOpacity 
             style={styles.closeButton}
@@ -297,6 +482,21 @@ const styles = StyleSheet.create({
   },
   camera: {
     flex: 1,
+  },
+  loadingContainer: {
+    position: 'absolute',
+    top: '50%',
+    left: 0,
+    right: 0,
+    alignItems: 'center',
+  },
+  loadingText: {
+    color: 'white',
+    marginTop: 10,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    paddingHorizontal: 15,
+    paddingVertical: 8,
+    borderRadius: 20,
   },
   handGuideContainer: {
     position: 'absolute',
@@ -337,11 +537,21 @@ const styles = StyleSheet.create({
     fontSize: 28,
     fontWeight: 'bold',
   },
-  translationText: {
-    color: 'white',
-    fontSize: 18,
+  signTypeContainer: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    width: '100%',
     marginTop: 8,
-    fontStyle: 'italic',
+  },
+  signTypeText: {
+    color: 'white',
+    fontSize: 14,
+    opacity: 0.8,
+  },
+  languageIndicator: {
+    color: 'white',
+    fontSize: 14,
+    opacity: 0.8,
   },
   confidenceBar: {
     width: '100%',
@@ -403,14 +613,22 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: 'bold',
   },
-  historyTranslationText: {
+  historySignType: {
     color: 'rgba(255, 255, 255, 0.8)',
     fontSize: 14,
     marginTop: 4,
   },
+  historyItemRight: {
+    alignItems: 'flex-end',
+  },
+  historyLanguage: {
+    color: 'white',
+    fontSize: 16,
+  },
   historyTimeText: {
     color: 'rgba(255, 255, 255, 0.6)',
     fontSize: 12,
+    marginTop: 4,
   },
   emptyHistoryText: {
     color: 'rgba(255, 255, 255, 0.5)',
@@ -470,20 +688,18 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
-  loadingContainer: {
+  activeLanguageIndicator: {
     position: 'absolute',
-    top: '50%',
-    left: 0,
-    right: 0,
-    alignItems: 'center',
+    top: 40,
+    left: 20,
+    backgroundColor: 'rgba(0, 0, 0, 0.7)',
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    borderRadius: 15,
   },
-  loadingText: {
+  activeLanguageText: {
     color: 'white',
-    marginTop: 10,
-    backgroundColor: 'rgba(0, 0, 0, 0.5)',
-    paddingHorizontal: 15,
-    paddingVertical: 8,
-    borderRadius: 20,
+    fontSize: 14,
   },
 });
 

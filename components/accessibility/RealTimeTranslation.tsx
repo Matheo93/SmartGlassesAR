@@ -1,4 +1,4 @@
-// components/accessibility/RealTimeTranslation.tsx
+// components/accessibility/RealTimeTranslation.tsx - Version mise à jour
 import React, { useState, useRef, useEffect } from 'react';
 import { 
   View, 
@@ -12,20 +12,11 @@ import { CameraView, CameraType } from 'expo-camera';
 import { ThemedText } from '../ui/ThemedText';
 import { ThemedView } from '../ui/ThemedView';
 import { Ionicons } from '@expo/vector-icons';
+import { TranslationService, DetectedText, useTranslation } from '../../services/TranslationService';
+import * as FileSystem from 'expo-file-system';
 
 const SCREEN_WIDTH = Dimensions.get('window').width;
 const SCREEN_HEIGHT = Dimensions.get('window').height;
-
-type DetectedText = {
-  text: string;
-  translatedText: string;
-  boundingBox: {
-    x: number;
-    y: number;
-    width: number;
-    height: number;
-  };
-};
 
 type RealTimeTranslationProps = {
   onClose?: () => void;
@@ -41,7 +32,11 @@ export const RealTimeTranslation: React.FC<RealTimeTranslationProps> = ({
   const [targetLanguage, setTargetLanguage] = useState('fr');
   const [error, setError] = useState<string | null>(null);
   
+  // Custom hook pour la traduction
+  const { isLoading, detectAndTranslate } = useTranslation();
+  
   const cameraRef = useRef<CameraView | null>(null);
+  const autoTranslateTimerRef = useRef<NodeJS.Timeout | null>(null);
   
   // Language options
   const languages = [
@@ -50,38 +45,26 @@ export const RealTimeTranslation: React.FC<RealTimeTranslationProps> = ({
     { code: 'es', name: 'Español' },
     { code: 'de', name: 'Deutsch' },
   ];
-
-  // Mock translation function (to be replaced with actual API call)
-  const translateText = async (imageBase64: string): Promise<DetectedText[]> => {
-    // Simulate API delay
-    await new Promise(resolve => setTimeout(resolve, 1500));
-    
-    // Mock detection results - in a real app, this would come from a vision API
-    return [
-      {
-        text: "Hello, how are you?",
-        translatedText: "Bonjour, comment allez-vous ?",
-        boundingBox: {
-          x: 100,
-          y: 150,
-          width: 200,
-          height: 50
-        }
-      },
-      {
-        text: "Exit",
-        translatedText: "Sortie",
-        boundingBox: {
-          x: 300,
-          y: 250,
-          width: 80,
-          height: 40
-        }
-      }
-    ];
-  };
   
-  // Capture and translate
+  // Effet pour gérer le mode auto-traduction
+  useEffect(() => {
+    if (isAutoTranslateEnabled && !isTranslating) {
+      autoTranslateTimerRef.current = setInterval(() => {
+        captureAndTranslate();
+      }, 3000); // Traduire toutes les 3 secondes
+    } else if (autoTranslateTimerRef.current) {
+      clearInterval(autoTranslateTimerRef.current);
+      autoTranslateTimerRef.current = null;
+    }
+    
+    return () => {
+      if (autoTranslateTimerRef.current) {
+        clearInterval(autoTranslateTimerRef.current);
+      }
+    };
+  }, [isAutoTranslateEnabled, isTranslating, isCameraReady]);
+  
+  // Capture et traduction
   const captureAndTranslate = async () => {
     if (!cameraRef.current || !isCameraReady || isTranslating) return;
     
@@ -89,7 +72,7 @@ export const RealTimeTranslation: React.FC<RealTimeTranslationProps> = ({
       setIsTranslating(true);
       setError(null);
       
-      // Take a photo
+      // Prendre une photo
       const photo = await cameraRef.current.takePictureAsync({
         base64: true,
         quality: 0.7,
@@ -99,9 +82,15 @@ export const RealTimeTranslation: React.FC<RealTimeTranslationProps> = ({
         throw new Error('Image capture failed');
       }
       
-      // Call translation service
-      const results = await translateText(photo.base64);
-      setDetectedTexts(results);
+      // Utiliser le service de traduction
+      const results = await detectAndTranslate(photo.base64, targetLanguage);
+      
+      if (results.length > 0) {
+        setDetectedTexts(results);
+      } else {
+        // Si aucun texte n'est détecté, afficher un message silencieux (pas d'alerte)
+        console.log('No text detected in the image');
+      }
       
     } catch (err) {
       const message = err instanceof Error ? err.message : 'An error occurred';
@@ -112,32 +101,19 @@ export const RealTimeTranslation: React.FC<RealTimeTranslationProps> = ({
     }
   };
   
-  // Auto translation timer
-  useEffect(() => {
-    let intervalId: NodeJS.Timeout | null = null;
-    
-    if (isAutoTranslateEnabled && !isTranslating) {
-      intervalId = setInterval(captureAndTranslate, 3000);
-    }
-    
-    return () => {
-      if (intervalId) clearInterval(intervalId);
-    };
-  }, [isAutoTranslateEnabled, isTranslating, isCameraReady]);
-  
-  // Change target language
+  // Changer la langue cible
   const cycleLanguage = () => {
     const currentIndex = languages.findIndex(lang => lang.code === targetLanguage);
     const nextIndex = (currentIndex + 1) % languages.length;
     setTargetLanguage(languages[nextIndex].code);
   };
   
-  // Render translation overlays
+  // Rendu des traductions
   const renderTranslationOverlays = () => {
     if (detectedTexts.length === 0) return null;
     
     return detectedTexts.map((item, index) => {
-      // Scale bounding box to screen dimensions
+      // Convertir les coordonnées normalisées en pixels d'écran
       const scaledBox = {
         x: (item.boundingBox.x / 1000) * SCREEN_WIDTH,
         y: (item.boundingBox.y / 1000) * SCREEN_HEIGHT,
@@ -159,7 +135,7 @@ export const RealTimeTranslation: React.FC<RealTimeTranslationProps> = ({
           ]}
         >
           <ThemedText style={styles.translationText}>
-            {item.translatedText}
+            {item.translatedText || item.text}
           </ThemedText>
         </View>
       );

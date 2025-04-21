@@ -9,10 +9,11 @@ import {
   Alert,
   ScrollView
 } from 'react-native';
-import * as Haptics from 'expo-haptics';
 import { ThemedText } from '../ui/ThemedText';
 import { ThemedView } from '../ui/ThemedView';
 import { Ionicons, FontAwesome5 } from '@expo/vector-icons';
+import { Platform } from 'react-native';
+import * as Haptics from 'expo-haptics';
 
 // Définir l'interface pour les obstacles
 interface Obstacle {
@@ -88,6 +89,14 @@ export const EnhancedNavigation: React.FC<EnhancedNavigationProps> = ({
   
   // Fonction pour commencer la navigation
   const startNavigation = async () => {
+    if (Platform.OS !== 'web') {
+      try {
+        // Utilisez Haptics uniquement sur les plateformes non-web
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      } catch (error) {
+        console.log('Haptics non disponible:', error);
+      }
+    }
     if (!destination) {
       Alert.alert('Destination requise', 'Veuillez entrer une destination');
       return;

@@ -20,7 +20,7 @@ import { ThemedView } from '../../components/ui/ThemedView';
 import { RealTimeTranslation } from '../../components/accessibility/RealTimeTranslation';
 import { SignLanguageRecognition } from '../../components/accessibility/SignLanguageRecognition';
 import { VoiceAssistant } from '../../components/accessibility/VoiceAssistant';
-import { ARPathNavigation } from '../../components/navigation/ARNavigation';
+import { ARNavigation } from '../../components/navigation/ARNavigation';
 import { BluetoothConnection } from '../../components/BluetoothConnection';
 
 // Modal type for feature selection
@@ -354,7 +354,7 @@ export default function CameraScreen() {
         animationType="slide"
         onRequestClose={closeModal}
       >
-        <ARPathNavigation 
+        <ARNavigation 
           onClose={closeModal}
           wheelchairMode={wheelchairMode}
         />
